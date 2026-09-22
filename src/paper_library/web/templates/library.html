@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ library_name }} · 论文阅读器{% endblock %}
+
+{% block content %}
+
+  {% if multi_library %}<p><a href="{{ url_for('home') }}">← 全部论文库</a></p>{% endif %}
+  <header class="library-header">
+    <h1>{{ library_name }}</h1>
+    <p class="library-count">{{ paper_count }} 篇论文</p>
+  </header>
+
+  {% if warnings %}
+    <section class="notice notice-warning" aria-label="目录警告">
+      <strong>部分目录记录已跳过</strong>
+      <ul>
+        {% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <div class="library-layout">
+    <nav class="subject-nav" aria-label="研究主题">
+      <span class="nav-label">研究主题</span>
+      {% for subject, papers in groups %}
+        <a href="#subject-{{ loop.index }}">{{ subject }} <span>{{ papers|length }}</span></a>
+      {% endfor %}
+    </nav>
+
+    <div class="subject-groups">
+      {% for subject, papers in groups %}
+        <section class="subject-group" id="subject-{{ loop.index }}">
+          <div class="subject-heading">
+            <h2>{{ subject }}</h2>
+            <span>{{ papers|length }} 篇</span>
+          </div>
+          <ol class="paper-list">
+            {% for paper in papers %}
+              <li class="paper-list-item">
+                <a class="paper-row" href="{{ url_for('paper_detail', paper_id=paper.id) }}">
+                  <span class="paper-row-index" aria-label="论文序号 {{ loop.index }}">{{ "%02d"|format(loop.index) }}</span>
+                  <div class="paper-row-publication" aria-label="出版信息">
+                    {% if paper.year %}<span class="paper-row-year">{{ paper.year }}</span>{% endif %}
+                    {% if paper.venue %}
+                      <span class="paper-row-venue"{% if paper.list_venue != paper.venue %} title="{{ paper.venue }}"{% endif %}>{{ paper.list_venue }}</span>
+                    {% endif %}
+                  </div>
+                  <div class="paper-row-primary">
+                    <h3>{{ paper.display_title }}</h3>
+                  </div>
+                  <span class="paper-row-arrow" aria-hidden="true">→</span>
+                </a>
+              </li>
+            {% endfor %}
+          </ol>
+        </section>
+      {% else %}
+        <section class="empty-state">
+          <h2>暂无可阅读论文</h2>
+          <p>导入 PDF 并完成解析后，论文会显示在这里。</p>
+        </section>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

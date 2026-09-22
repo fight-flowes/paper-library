@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block title %}全文搜索 · 论文阅读器{% endblock %}
+{% block content %}
+<h1>全文搜索</h1>
+<form class="search-form" action="/search"><input name="q" value="{{ query }}" placeholder="搜索题目、作者、原文和已保存译文" aria-label="搜索论文" maxlength="200" required><button>搜索</button></form>
+{% if index_errors %}<p role="status">部分内容暂未建立索引：{{ index_errors|join('、') }}</p>{% endif %}
+{% if query %}<p class="search-count">{{ total_papers }} 篇论文 · {{ total_hits }} 处匹配（每篇最多展示 60 处）</p>{% endif %}
+{% macro hit(item) %}<div class="search-hit"><small>{{ {'metadata':'题目与作者','original':'原文','translation':'中文译文'}[item.origin] }}</small><p>{{ item.excerpt|highlight_query(query) }}</p><a class="hit-link" href="{{ url_for('paper_detail',library_id=item.library,paper_id=item.paper) }}{% if item.origin == 'translation' %}?lang=zh{% endif %}{% if item.anchor %}#{{ item.anchor }}{% endif %}">定位原文 →</a></div>{% endmacro %}
+<div class="search-results">{% for group in groups %}<article><h2><a href="{{ url_for('paper_detail',library_id=group.library,paper_id=group.paper) }}">{{ group.title|highlight_query(query) }}</a></h2><small>{{ group.library }} · {{ group.hits|length }} 处匹配</small>{{ hit(group.hits[0]) }}{% if group.hits|length > 1 %}<details class="search-matches"><summary>展开其余 {{ group.hits|length - 1 }} 处匹配</summary>{% for item in group.hits[1:] %}{{ hit(item) }}{% endfor %}</details>{% endif %}</article>{% else %}{% if query %}<p class="empty-note">未找到匹配内容</p>{% endif %}{% endfor %}</div>
+{% if page > 1 or has_next %}<nav class="search-pagination" aria-label="搜索结果分页">{% if page > 1 %}<a href="{{ url_for('personal.search',q=query,page=page-1) }}">上一页</a>{% endif %}<span>第 {{ page }} 页</span>{% if has_next %}<a href="{{ url_for('personal.search',q=query,page=page+1) }}">下一页</a>{% endif %}</nav>{% endif %}
+{% endblock %}

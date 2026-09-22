@@ -1,0 +1,4 @@
+<nav class="workspace-nav" aria-label="主导航">
+{% for href,label in [('/', '论文库'),('/search','全文搜索'),('/reading','最近阅读'),('/manage/status','运行状态')] %}
+<a href="{{ href }}"{% if request.path == href or (href == '/' and request.path.startswith('/library/')) %} aria-current="page"{% endif %}>{{ label }}</a>
+{% endfor %}</nav>

@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}运行状态 · 论文阅读器{% endblock %}
+{% block content %}
+<header class="workspace-heading"><h1>运行状态</h1><span class="state-badge" data-state="{{ 'ok' if report.reading_ready else 'error' }}">{{ '阅读服务正常' if report.reading_ready else '阅读服务需要检查' }}</span></header>
+{% set names={'worker':'后台任务处理','library':'论文库','jobs.sqlite3':'任务数据库','personal.sqlite3':'阅读数据与标注数据库','disk':'磁盘空间','backup':'数据备份','mineru':'MinerU 解析器','model':'本地模型','tavily':'论文信息检索'} %}
+{% set statuses={'stale':'备份已过期','waiting':'等待维护窗口','ok':'正常','warning':'需要检查','error':'异常','available':'已有备份','not_created':'尚未创建','installed':'已安装','unavailable':'不可用','configured':'已配置，未检查连接','unconfigured':'未配置','not_probed':'未检查连接','reachable':'可连接'} %}
+{% set states={'queued':'排队中','running':'处理中','completed':'已完成','completed_with_warnings':'已完成，有待处理项','failed':'失败','cancelled':'已取消'} %}
+{% set stages={'queued':'排队','parsing':'PDF 解析','repairing':'段落修复','enriching':'信息核对','publishing':'入库','published':'已入库','structuring':'结构校对','translating':'翻译','guiding':'生成导读','completed':'完成','failed':'失败','cancelled':'取消'} %}
+<ul class="status-grid">{% for name,item in report.checks.items() %}<li><strong>{{ names.get(name,name) }}</strong><span class="state-badge" data-state="{{ item.status }}">{{ statuses.get(item.status,item.status) }}</span>{% if item.latest %}<small>最近备份：<time datetime="{{ item.latest }}">{{ item.latest[:16]|replace('T',' ') }} UTC</time></small>{% endif %}{% if item.verification is defined %}<small>校验：{{ {'ok':'最近校验通过','unknown':'尚无校验记录','error':'最近备份或校验失败','waiting':'等待任务释放'}.get(item.verification,item.verification) }}</small>{% endif %}{% if item.free_mb is defined %}<small>剩余 {{ '%.1f'|format(item.free_mb / 1024) }} GB</small>{% endif %}</li>{% endfor %}</ul>
+<details class="technical-details"><summary>诊断与维护</summary><p>检测模型和检索服务连接：<code>bash scripts/ops check --network</code></p></details>
+<h2>最近任务</h2>
+{% for job in jobs %}<details class="task-history"><summary><a href="{{ url_for('management.job_detail',job_id=job.id) }}">{{ job.original_filename }}</a> · {{ states.get(job.state.value,job.state.value) }}</summary><ol>{% for event in events[job.id] %}<li><time>{{ event.created_at[:19]|replace('T',' ') }} UTC</time> · {{ stages.get(event.stage,event.stage) }} · {{ states.get(event.state,event.state) }}{% if event.error %} · {{ event.error }}{% endif %}</li>{% endfor %}</ol></details>{% else %}<p class="empty-note">暂无任务</p>{% endfor %}
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}导入论文 · 论文阅读器{% endblock %}
+{% block content %}
+  <div class="import-page">
+  <p><a href="{{ url_for('home') }}">← 全部论文库</a></p>
+  <header class="library-header">
+    <h1>导入论文</h1>
+    <p class="library-count">选择 PDF、归属论文库和研究主题</p>
+  </header>
+
+  {% if error %}<p class="notice notice-warning" role="alert">{{ error }}</p>{% endif %}
+  {% if not mutations_enabled %}<p class="notice notice-warning">当前绑定地址未启用管理操作。</p>{% endif %}
+
+  <form class="import-form" action="{{ url_for('management.create_job') }}" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="management_token" value="{{ management_token }}">
+    <label>PDF 文件
+      <span class="import-file-control">
+        <input type="file" name="pdf" id="import-pdf" accept="application/pdf,.pdf" required>
+        <span class="import-file-button" aria-hidden="true">选择文件</span>
+        <span id="import-file-name" aria-hidden="true">未选择文件</span>
+      </span>
+    </label>
+    <label>论文库
+      <select name="library_id" id="import-library" required>
+        {% for library_id, descriptor in libraries.items() %}
+          <option value="{{ library_id }}">{{ descriptor.config.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="subject-field">
+      <label for="import-subject">研究主题</label>
+      <div class="subject-controls">
+        <select name="subject" id="import-subject" required></select>
+        <button type="button" id="add-subject" aria-expanded="false" aria-controls="new-subject">新增主题</button>
+      </div>
+      <div id="new-subject" hidden data-url="{{ url_for('management.create_subject') }}">
+        <label for="new-subject-name">新主题名称</label>
+        <input id="new-subject-name" maxlength="120" placeholder="输入研究主题">
+        <div class="subject-controls">
+          <button type="button" id="save-subject">保存并选中</button>
+          <button type="button" id="cancel-subject">取消</button>
+        </div>
+        <small id="subject-error" role="alert"></small>
+      </div>
+    </div>
+    <label>文档语言
+      <select name="language"><option value="en">英文</option><option value="ch">中文</option></select>
+    </label>
+    <label><input type="checkbox" name="enrich" value="1" checked> Tavily 检索并修复书目信息</label>
+    <label><input type="checkbox" name="auto_translate" value="1" checked> 解析后自动翻译</label>
+    <button type="submit" class="pdf-button" {% if not mutations_enabled %}disabled{% endif %}>开始导入</button>
+  </form>
+  <script type="application/json" id="library-subjects">{{ subjects_by_library | tojson }}</script>
+
+  <section class="recent-jobs">
+    <h2>最近任务</h2>
+    <ol class="paper-list">
+      {% for job in jobs %}
+        <li><a href="{{ url_for('management.job_detail', job_id=job.id) }}">{{ job.original_filename }} · {{ {'queued':'排队中','running':'处理中','completed':'已完成','completed_with_warnings':'已完成，有待处理项','failed':'失败','cancelled':'已取消'}.get(job.state.value,job.state.value) }}</a></li>
+      {% else %}<li>暂无任务</li>{% endfor %}
+    </ol>
+  </section>
+  </div>
+{% endblock %}

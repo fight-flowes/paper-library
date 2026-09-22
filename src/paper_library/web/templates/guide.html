@@ -1,0 +1,46 @@
+{% macro points(items) %}
+  <ul class="guide-points">
+  {% for point in items %}
+    <li><span class="guide-kind">{{ point.kind }}</span> {% if point.label %}<strong>{{ point.label }}</strong>{% endif %}
+      <p>{{ point.text }}</p>
+      <details class="guide-evidence"><summary>查看原文依据</summary>
+        {% for evidence in point.evidence %}<blockquote><a href="#{{ evidence.id }}" class="guide-source">定位原文 ↗</a> {{ evidence.quote }}</blockquote>{% endfor %}
+      </details>
+    </li>
+  {% endfor %}
+  </ul>
+{% endmacro %}
+<details id="reading-guide" class="reading-guide">
+  <summary>论文导读 <span>全文概览与章节提示</span></summary>
+  {% if not guide %}
+    <p>尚未生成导读。</p>
+    <p class="guide-command">终端执行：<code>bash scripts/guide run --library {{ g.library_id }} --paper {{ paper.id }}</code></p>
+  {% elif guide.stale %}
+    <p>正文已更新或导读文件不可用，请重新生成导读。</p>
+    <p class="guide-command"><code>bash scripts/guide run --library {{ g.library_id }} --paper {{ paper.id }}</code></p>
+  {% else %}
+    {{ points(guide.overview) }}
+    <h2>按实际章节阅读</h2>
+    {% for section in guide.sections %}
+      {% if section.parts | selectattr('points') | list %}
+      <details class="guide-section" data-guide-section="{{ section.id }}">
+        <summary>{{ section.title }}</summary>
+        <a class="guide-source" href="#{{ section.id }}">查看本节原文 ↗</a>
+        {% for part in section.parts %}
+          {% if part.points %}
+            <p class="guide-role">{{ part.role }}</p>
+            <p class="guide-overview-label">本节概览</p>
+            {{ points(part.points) }}
+            {% if part.details %}
+              <details class="guide-depth">
+                <summary>展开详细解读 · {{ part.details | length }} 个要点</summary>
+                {{ points(part.details) }}
+              </details>
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      </details>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+</details>

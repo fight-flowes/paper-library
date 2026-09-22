@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}导入任务 · 论文阅读器{% endblock %}
+{% block content %}
+  <p><a href="{{ url_for('management.import_page') }}">← 导入论文</a></p>
+  <article class="job-card" data-job-url="{{ url_for('management.job_status', job_id=job.id) }}" data-enrich="{{ 'true' if job.enrich else 'false' }}" data-auto-translate="{{ 'true' if job.auto_translate else 'false' }}">
+    <h1>{{ job.original_filename }}</h1>
+    <p>{{ job.library_id }} · {{ job.subject }}</p>
+    <ol class="job-stages" data-job-stages aria-label="导入阶段"></ol>
+    <p class="job-state" data-job-state role="status" aria-live="polite">正在获取任务状态…</p>
+    <p data-job-detail></p>
+    <div class="job-progress">
+      <progress data-job-progress aria-label="当前阶段进度"></progress>
+      <span data-job-progress-label>正在获取进度…</span>
+    </div>
+    <p class="job-timing" data-job-timing></p>
+    <p class="notice notice-warning" data-job-connection role="status" hidden></p>
+    <p class="notice notice-warning" data-job-error {% if not job.error %}hidden{% endif %}>{{ job.error or '' }}</p>
+    <p><a class="pdf-button" data-paper-link href="{{ paper_url or '#' }}" {% if not paper_url %}hidden{% endif %}>打开论文 →</a></p>
+
+    <section class="job-results" aria-label="各阶段处理结果"><h2>处理结果</h2><ul data-job-outcomes></ul></section>
+
+    {% if mutations_enabled %}<div class="job-actions">
+      <form data-job-action="cancel" {% if job.state.value not in ["queued", "running"] %}hidden{% endif %} method="post" action="{{ url_for('management.cancel_job', job_id=job.id) }}"><input type="hidden" name="management_token" value="{{ management_token }}"><button type="submit">取消</button></form>
+      <form data-job-action="retry" {% if job.state.value not in ["failed", "completed_with_warnings"] %}hidden{% endif %} method="post" action="{{ url_for('management.retry_job', job_id=job.id) }}"><input type="hidden" name="management_token" value="{{ management_token }}"><button type="submit">重试</button></form>
+      <form data-job-action="translate" {% if job.state.value not in ["completed", "completed_with_warnings"] or not job.paper_id or job.auto_translate %}hidden{% endif %} method="post" action="{{ url_for('management.translate_job', job_id=job.id) }}"><input type="hidden" name="management_token" value="{{ management_token }}"><button type="submit">开始翻译</button></form>
+    </div>{% endif %}
+  </article>
+{% endblock %}

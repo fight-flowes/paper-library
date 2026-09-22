@@ -1,0 +1,8 @@
+# Preserve imported papers byte-for-byte, including intentional Markdown line breaks.
+libraries/** -text -whitespace
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary

@@ -1,0 +1,22 @@
+.env
+**/.catalog.lock
+**/.reading-guide.lock
+**/reading-guide-cache/
+__pycache__/
+.pytest_cache/
+.paper-library-dev/
+*.py[cod]
+node_modules/
+**/.document-structure.lock
+**/.structure-cache/
+.backups/
+.maintenance.lock
+**/.mutation.lock
+**/.history/
+**/.paper-locks/
+
+.maintenance-intent.lock
+**/.transactions/
+
+# Local paper collections stay on this machine; GitHub contains code only.
+/libraries/

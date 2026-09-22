@@ -1,0 +1,47 @@
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+(async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({viewport:{width:1440,height:960}});
+    const errors=[]; page.on('pageerror',error=>errors.push(error.message));
+    await page.goto((process.env.PAPER_READER_URL || 'http://127.0.0.1:18020')+'/library/whitespace/paper/ws-p0003');
+    assert(await page.locator('.reader-sidebar').isVisible(), 'desktop has a reading sidebar');
+    const article=await page.locator('.article-column').boundingBox();
+    await page.getByRole('button',{name:'标注',exact:true}).click();
+    const notes=await page.locator('#notes-panel').boundingBox();
+    assert(notes.x>=article.x+article.width, 'notes must not cover the paper');
+    assert.equal(await page.locator('#close-notes').count(),0);
+    assert(!(await page.locator('#selected-quote').innerText()).includes('请先'));
+    await page.getByRole('button',{name:'目录',exact:true}).click();
+    assert(await page.locator('.paper-toc').isVisible());
+    await page.getByRole('button',{name:'收起阅读栏'}).click();
+    assert(!(await page.locator('.reader-sidebar').isVisible()));
+    await page.getByRole('button',{name:'展开阅读栏'}).click();
+    assert(await page.locator('.reader-sidebar').isVisible());
+    await page.getByLabel('更多阅读操作',{exact:true}).click();
+    assert(await page.locator('.guide-toolbar').isVisible());
+    await page.keyboard.press('Escape');
+    assert(!(await page.locator('.guide-toolbar').isVisible()));
+    const originalUrl=page.url();
+    assert.equal(await page.locator('.drawer-toggle, #drawer-search').count(),0);
+    await page.locator('.open-reading-records').click();
+    await page.locator('#drawer-results h2').first().waitFor();
+    assert.equal(page.url(),originalUrl,'reading records stay in reader');
+    await page.keyboard.press('Escape');
+    assert(!(await page.locator('#library-drawer').isVisible()));
+    await page.setViewportSize({width:390,height:844});
+    assert(!(await page.locator('.reader-sidebar').isVisible()));
+    await page.getByRole('button',{name:'展开阅读栏'}).click();
+    assert(await page.locator('.reader-sidebar').isVisible());
+    await page.locator('.open-reading-records').click();
+    assert(!(await page.locator('.reader-sidebar').isVisible()),'mobile opens only one drawer');
+    assert(await page.locator('#library-drawer').isVisible());
+    await page.keyboard.press('Escape');
+    assert(!(await page.locator('.reader-sidebar').isVisible()));
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    assert(['left','start'].includes(await page.locator('.paper-body p').last().evaluate(e=>getComputedStyle(e).textAlign)));
+    assert.deepEqual(errors,[]);
+    console.log('Reading layout: desktop panels, mobile drawer, keyboard and overflow passed');
+  } finally { await browser.close(); }
+})().catch(e=>{console.error(e);process.exitCode=1;});

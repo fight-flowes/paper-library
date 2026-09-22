@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}最近阅读 · 论文阅读器{% endblock %}
+{% block content %}
+<header class="workspace-heading"><h1>最近阅读</h1><details class="export-menu"><summary>导出标注</summary><a href="/reading/export">JSON</a><a href="/reading/export?format=markdown">Markdown</a></details></header>
+<div class="reading-list">
+{% for row in readings %}<article class="reading-row"><div>{% if row.exists %}<a href="{{ url_for('paper_detail',library_id=row.library,paper_id=row.paper) }}?resume=1">{{ row.title }}</a>{% else %}{{ row.title }}（论文已移除）{% endif %}<div class="reading-progress"><progress max="100" value="{{ row.progress.percent }}" aria-label="阅读进度"></progress><span>{{ '%.0f'|format(row.progress.percent) }}%</span></div></div>{% if row.exists %}<a class="quiet-button" href="{{ url_for('paper_detail',library_id=row.library,paper_id=row.paper) }}?resume=1">继续阅读</a>{% endif %}</article>{% else %}<p class="empty-note">暂无阅读进度</p>{% endfor %}</div>
+<h2>标注</h2><div class="search-results">{% for note in notes %}<article><h3><a href="{{ url_for('paper_detail',library_id=note.library,paper_id=note.paper) }}?note={{ note.id }}">{{ note.title }}</a></h3><small>{{ {'note':'笔记','bookmark':'位置标记','highlight':'高亮'}[note.kind] }}</small><blockquote>{{ note.quote }}</blockquote><p class="note-body">{{ note.body }}</p></article>{% else %}<p class="empty-note">暂无标注</p>{% endfor %}</div>
+{% endblock %}

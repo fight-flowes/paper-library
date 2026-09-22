@@ -1,0 +1,15 @@
+{
+  "name": "paper-library-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "node tests/browser/translation.cjs",
+    "test:management": "node tests/browser/management.cjs",
+    "test:layout": "node tests/browser/layout.cjs",
+    "test:workspace": "node tests/browser/workspace.cjs",
+    "test:guide": "node tests/browser/guide.cjs",
+    "test": "node tests/browser/management.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1"
+  }
+}

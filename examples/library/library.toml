@@ -1,0 +1,4 @@
+schema_version = 1
+id = "example"
+name = "我的论文库"
+paper_id_prefix = "ex"

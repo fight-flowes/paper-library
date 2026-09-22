@@ -1,0 +1,24 @@
+/* Persisted full-paper and section reading guides. */
+.guide-toolbar { color: var(--ink-soft); text-decoration: none; font-size: 0.85rem; white-space: nowrap; }
+.reading-guide { border: 1px solid var(--line-strong); border-radius: 0.5rem; padding: 0.7rem 1rem; margin-bottom: 1rem; background: var(--paper); overflow-wrap: anywhere; }
+.reading-guide summary { cursor: pointer; font-weight: 650; }
+.reading-guide > summary span { font-size: 0.8rem; color: var(--ink-soft); font-weight: 400; margin-left: 0.5rem; }
+.guide-note, .guide-command { color: var(--ink-soft); font-size: 0.8rem; }
+.guide-points { padding-left: 1.25rem; line-height: 1.75; }
+.guide-points > li { margin: 0.7rem 0; }
+.guide-points p { margin: 0.2rem 0; }
+.guide-kind { font-size: 0.72rem; color: var(--accent); margin-right: 0.3rem; }
+.guide-evidence { font-size: 0.8rem; color: var(--ink-soft); }
+.guide-evidence blockquote { margin: 0.4rem 0; padding-left: 0.7rem; border-left: 2px solid var(--line-strong); }
+.guide-source { color: var(--accent); font-size: 0.8rem; }
+.guide-section { border-top: 1px solid var(--line); padding: 0.65rem 0; }
+.guide-role { font-size: 0.9rem; color: var(--ink-soft); }
+.paper-body [id^="source-"], #reading-guide { scroll-margin-top: 6rem; }
+.paper-body [id^="source-"]:target { outline: 2px solid var(--line-strong); outline-offset: 0.3rem; }
+@media (max-width: 620px) { .paper-actions { gap: 0.4rem; } .reading-guide { padding: 0.65rem; } }
+.section-reading-guide { font-family: var(--sans); background: var(--paper); border: 1px solid var(--line); border-radius: 0.35rem; padding: 0.45rem 0.7rem; margin: 0.3rem 0 0.6rem; font-size: 0.88rem; }
+.section-reading-guide summary { cursor: pointer; color: var(--accent); }
+.paper-body .section-reading-guide p { text-align: start; margin: 0.25rem 0; }
+.guide-overview-label { color: var(--ink-soft); font-size: 0.8rem; font-weight: 650; }
+.guide-depth { margin: 0.5rem 0; padding: 0.5rem 0.7rem; border-left: 2px solid var(--line-strong); background: rgb(37 99 164 / 3%); }
+.guide-depth > summary { color: var(--accent); font-size: 0.85rem; }

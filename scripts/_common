@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+run_module() {
+  local module="$1"
+  local conda_env="${PAPER_LIBRARY_CONDA_ENV:-}"
+  shift
+  if [[ -z "$conda_env" ]]; then
+    conda_env="$(python "$PROJECT_ROOT/scripts/_environment.py")"
+  fi
+  case "$module" in
+    paper_library.cli.library|paper_library.cli.translate|paper_library.cli.guide|paper_library.cli.structure)
+      set -- "$module" "$@"
+      module="paper_library.cli.guarded"
+      ;;
+  esac
+  if [[ "${CONDA_DEFAULT_ENV:-}" == "$conda_env" ]]; then
+    exec python -m "$module" "$@"
+  fi
+  if ! command -v conda >/dev/null 2>&1; then
+    echo "错误：未找到 conda；请安装 Conda 或激活 paper 环境。" >&2
+    return 127
+  fi
+  exec conda run --no-capture-output -n "$conda_env" python -m "$module" "$@"
+}

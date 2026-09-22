@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}论文阅读器{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='reader.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
+    <script defer src="{{ url_for('static', filename='reader.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='translation.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='jobs.js') }}"></script>
+  </head>
+  <body>
+    {% block body %}
+      <main class="reader-shell">
+        {% include 'workspace-nav.html' %}
+        {% block content %}{% endblock %}
+      </main>
+    {% endblock %}
+  </body>
+</html>
