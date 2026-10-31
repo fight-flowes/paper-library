@@ -19,6 +19,7 @@ from .models import (
     JobStage,
     JobState,
     NewJob,
+    QueueFull,
 )
 
 
@@ -134,6 +135,87 @@ class JobRepository:
                 END;
             """)
 
+    def reconcile_metadata_notices(self, libraries) -> int:
+        """Resolve stale metadata warnings only from a currently verified paper."""
+        from paper_library.catalog import LibraryError, read_metadata
+        updated = 0
+        with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE state = 'completed_with_warnings' AND paper_id IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                try:
+                    outcomes = json.loads(row['outcomes_json'])
+                    if not isinstance(outcomes, dict) or outcomes.get('metadata', {}).get('status') != 'warning':
+                        continue
+                    snapshot = libraries.load(row['library_id'])
+                    paper = snapshot.find(row['paper_id'])
+                    if paper is None:
+                        continue
+                    metadata, _ = read_metadata(snapshot.descriptor.root, paper)
+                    bibliography = metadata.get('bibliography') or {}
+                    canonical = bibliography.get('canonical_title')
+                    if (metadata.get('enrichment', {}).get('status') != 'verified'
+                            or not isinstance(canonical, str)
+                            or ' '.join(canonical.split()) != ' '.join(paper.title.split())):
+                        continue
+                except (LibraryError, OSError, ValueError, TypeError, AttributeError):
+                    continue
+                outcomes['metadata'] = {'status': 'completed', 'message': '论文信息已重新核验',
+                                        'reason': 'verified', 'verified_at': _timestamp(self.clock())}
+                warnings = (any(not isinstance(item, dict) or item.get('status') not in {'completed', 'skipped'}
+                                for item in outcomes.values())
+                            or row['progress_failed'] or row['progress_pending']
+                            or row['progress_cached'] + row['progress_translated'] < row['progress_total'])
+                state = JobState.COMPLETED_WITH_WARNINGS if warnings else JobState.COMPLETED
+                connection.execute('UPDATE jobs SET state = ?, outcomes_json = ? WHERE id = ?',
+                                   (state.value, json.dumps(outcomes, ensure_ascii=False), row['id']))
+                updated += 1
+        return updated
+
+    def reconcile_quality_notices(self) -> int:
+        """Correct historical jobs completed solely with readable translation notices."""
+        updated = 0
+        with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            rows = connection.execute(
+                'SELECT id, outcomes_json, progress_total, progress_cached, '
+                'progress_translated, progress_failed, progress_pending FROM jobs WHERE state = ?',
+                (JobState.COMPLETED_WITH_WARNINGS.value,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    outcomes = json.loads(row['outcomes_json'])
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(outcomes, dict):
+                    continue
+                translation = outcomes.get('translation')
+                if not isinstance(translation, dict) or translation.get('status') != 'warning':
+                    continue
+                if not isinstance(translation.get('reading_warnings'), int) or translation['reading_warnings'] <= 0:
+                    continue
+                if translation.get('failed') != 0:
+                    continue
+                if translation.get('integrity_warnings') != 0:
+                    continue
+                if row['progress_failed'] or row['progress_pending']:
+                    continue
+                if row['progress_cached'] + row['progress_translated'] < row['progress_total']:
+                    continue
+                if any(not isinstance(result, dict) or result.get('status') not in {'completed', 'skipped'}
+                       for key, result in outcomes.items() if key != 'translation'):
+                    continue
+                outcomes['translation'] = {**translation, 'status': 'completed'}
+                cursor = connection.execute(
+                    'UPDATE jobs SET state = ?, outcomes_json = ? WHERE id = ? AND state = ?',
+                    (JobState.COMPLETED.value, json.dumps(outcomes, ensure_ascii=False),
+                     row['id'], JobState.COMPLETED_WITH_WARNINGS.value),
+                )
+                updated += cursor.rowcount
+        return updated
+
     def events(self, job_id):
         with self._connect() as connection:
             return [dict(row) for row in connection.execute(
@@ -149,8 +231,7 @@ class JobRepository:
         now = _timestamp(self.clock())
         with self._connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
-            if self.max_pending is not None and connection.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0] >= self.max_pending:
-                raise ValueError('待处理任务已达上限，请等待现有任务完成')
+            self._check_capacity(connection)
             connection.execute(
                 """
                 INSERT INTO jobs (
@@ -350,6 +431,8 @@ class JobRepository:
         self._assert_transition(job.state, JobState.QUEUED)
         now = _timestamp(self.clock())
         with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            self._check_capacity(connection)
             cursor = connection.execute(
                 """
                 UPDATE jobs SET state = ?, stage = ?, error = NULL,
@@ -371,6 +454,8 @@ class JobRepository:
             raise InvalidTransition("只有已完成解析的任务可以继续翻译")
         self._assert_transition(job.state, JobState.QUEUED)
         with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            self._check_capacity(connection)
             cursor = connection.execute(
                 """
                 UPDATE jobs SET auto_translate = 1, state = ?, stage = ?,
@@ -388,6 +473,11 @@ class JobRepository:
             if cursor.rowcount != 1:
                 raise InvalidTransition("任务状态已变化，请刷新后重试")
         return self._required(job_id)
+
+    def _check_capacity(self, connection):
+        if self.max_pending is not None and connection.execute(
+                "SELECT count(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0] >= self.max_pending:
+            raise QueueFull('待处理任务已达上限，请等待现有任务完成后重试')
 
     def complete(self, job_id: str, *, warnings: bool = False) -> JobRecord:
         target = JobState.COMPLETED_WITH_WARNINGS if warnings else JobState.COMPLETED

@@ -1,0 +1,46 @@
+/* Settings use the reader's existing editorial workspace tokens. */
+.settings-heading { align-items:flex-start; }
+.settings-heading h1 { margin:0; }
+.settings-layout { display:grid; grid-template-columns:180px minmax(0,1fr); gap:2.5rem; margin-top:2rem; }
+.settings-sections { display:flex; flex-direction:column; align-self:start; position:sticky; top:1.5rem; gap:.35rem; }
+.settings-sections a { display:flex; align-items:center; min-height:var(--control-size); padding:.5rem .75rem; border-left:2px solid var(--line-strong); text-decoration:none; font-size:.9rem; }
+.settings-sections a:hover,.settings-sections a:focus-visible { background:var(--accent-soft); border-color:var(--accent); }
+.settings-sections a:last-child { margin-top:1rem; font-size:.8rem; color:var(--ink-soft); }
+.settings-content { min-width:0; }
+.settings-section { padding:2rem 0; scroll-margin-top:1rem; border-bottom:1px solid var(--line-strong); }
+.settings-section:first-of-type { padding-top:0; }
+.settings-section h2 { margin:0; font-family:var(--sans); font-size:1.2rem; }
+.settings-section header > p,.setting-hint { color:var(--ink-soft); font-size:.85rem; line-height:1.65; margin:.5rem 0 1.25rem; }
+.settings-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1.25rem 1.5rem; }
+.setting-field { min-width:0; display:flex; flex-direction:column; gap:.45rem; color:var(--ink); font-size:.85rem; font-weight:650; }
+.setting-field > span,.setting-field > label { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; }
+.setting-field input,.setting-field select { width:100%; min-width:0; min-height:var(--control-size); padding:.55rem .7rem; font:inherit; font-weight:450; color:var(--ink); background:var(--paper); border:1px solid var(--line-strong); border-radius:.4rem; }
+.setting-field input:read-only,.setting-field select:disabled { background:var(--paper-muted); color:var(--ink-soft); }
+.setting-field input:focus-visible,.setting-field select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.setting-field small { font-size:.75rem; font-weight:400; color:var(--ink-soft); line-height:1.6; overflow-wrap:anywhere; }
+.setting-source { font-size:.65rem!important; }
+.setting-check { display:flex; align-items:center; gap:.5rem; min-height:var(--control-size); font-size:.75rem; color:var(--ink-soft); }
+.setting-check input { width:1rem; height:1rem; }
+.setting-advanced { margin-top:1.25rem; }
+.setting-advanced > summary { display:flex; align-items:center; min-height:var(--control-size); font-size:.85rem; color:var(--accent-dark); cursor:pointer; }
+.setting-advanced > summary::before { content:'＋'; margin-right:.4rem; }
+.setting-advanced[open] > summary::before { content:'−'; }
+.setting-advanced .settings-fields { padding:.75rem 0; }
+.setting-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.75rem; margin-top:1.5rem; }
+.setting-actions button { min-height:var(--control-size); padding:.55rem .85rem; border:1px solid var(--line-strong); border-radius:.4rem; font:inherit; font-size:.85rem; cursor:pointer; }
+.setting-actions .pdf-button { border-color:var(--accent); }
+.setting-test { color:var(--accent-dark); background:var(--paper); }
+.setting-actions button:disabled { cursor:wait; opacity:.55; }
+.setting-feedback { flex-basis:100%; margin:0; overflow-wrap:anywhere; font-size:.85rem; }
+.setting-feedback:empty { display:none; }
+.setting-feedback[data-state=error] { color:#9b2c2c; }
+.setting-feedback[data-state=ok],.settings-success { color:#17663a; }
+@media(max-width:900px) { .settings-layout { grid-template-columns:145px minmax(0,1fr); gap:1.5rem; } .settings-fields { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:600px) {
+ .settings-heading { flex-wrap:wrap; gap:1rem; }
+ .settings-layout { grid-template-columns:minmax(0,1fr); gap:1rem; margin-top:1.25rem; }
+ .settings-sections { position:static; flex-direction:row; flex-wrap:wrap; gap:.35rem; }
+ .settings-sections a { border-left:0; border-bottom:2px solid var(--line-strong); padding:.5rem; }
+ .settings-sections a:last-child { margin:0; }
+ .settings-section { padding:1.5rem 0; }
+}

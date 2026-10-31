@@ -5,10 +5,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const endpoint=root.dataset.personalUrl, token=root.dataset.personalToken, version=root.dataset.version;
   const article=document.querySelector('.paper-body');if(!article)return;
   const panel=document.getElementById('notes-panel'), list=document.getElementById('notes-list');
-  const status=document.getElementById('notes-status'), editor=document.getElementById('note-text');
-  const selected=document.getElementById('selected-quote'), resume=document.getElementById('resume-reading');
+  const status=document.getElementById('notes-status');
+  const addHighlight=document.getElementById('add-highlight');
+  const resume=document.getElementById('resume-reading');
   const norm=text=>text.replace(/\s+/gu,' ').trim();
-  let selection=null, data=null, timer=null, interactive=false, restoring=false;
+  let selection=null, highlighting=false, data=null, timer=null, interactive=false, restoring=false;
+  const highlightStatus=document.getElementById('highlight-status');
+  const syncHighlight=()=>{addHighlight.disabled=highlighting || !selection || !token || addHighlight.dataset.enabled!=='true';};
   let revision=null, saving=false, pending=false, conflicted=false, retries=0;
   const blocks=()=>Array.from(article.querySelectorAll('[id]')).filter(e=>!e.closest('.paragraph-translation') && e.getClientRects().length && norm(e.textContent));
   async function api(path='',method='GET',body=null){
@@ -38,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if(start<0)return null;
     return {anchor:block.id,quote,prefix:Array.from(full.slice(0,start)).slice(-60).join(''),suffix:Array.from(full.slice(start+quote.length)).slice(0,60).join(''),document_version:version};
   }
-  function openPanel(){selection=selectedText();selected.textContent=selection?selection.quote:'';panel.hidden=false;load();}
+  function openPanel(){panel.hidden=false;load();}
   document.getElementById('open-notes').addEventListener('click',openPanel);
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.defaultPrevented)panel.hidden=true;});
   function jump(anchor,offset=0){
@@ -71,27 +74,37 @@ document.addEventListener('DOMContentLoaded', () => {
   function render(){
     list.replaceChildren();
     for(const note of data.notes){
-      const item=document.createElement('article'), quote=document.createElement('button'), badge=document.createElement('small'), text=document.createElement('textarea');
-      quote.type='button';quote.className='note-quote';quote.textContent=note.quote;quote.disabled=!note.resolved_anchor;
+      const item=document.createElement('article'), quote=document.createElement('button'), text=document.createElement('textarea');
+      quote.type='button';quote.className='note-quote';quote.title=note.quote;quote.disabled=!note.resolved_anchor;
+      const preview=document.createElement('span');preview.className='note-quote-preview';preview.textContent=note.quote;quote.append(preview);
       quote.addEventListener('click',()=>jump(note.resolved_anchor));
-      badge.textContent=note.status==='orphaned'?'原文已变化，位置待确认':note.status==='relocated'?'已按原文重新定位':({note:'笔记',bookmark:'位置标记',highlight:'高亮'}[note.kind]);
-      text.value=note.body;text.setAttribute('aria-label','编辑笔记');text.rows=3;
-      const save=document.createElement('button');save.textContent='保存修改';save.disabled=!token;
-      save.addEventListener('click',async()=>{try{await api('/'+note.id,'PATCH',{body:text.value});notify('已保存');await load();}catch(e){notify(e.message);}});
-      const remove=document.createElement('button');remove.textContent='删除';remove.disabled=!token;
+      if(note.status==='orphaned'){
+        const warning=document.createElement('small');warning.textContent='原文已变化，位置待确认';item.append(warning);
+      }
+      text.value=note.body;text.setAttribute('aria-label','编辑备注');text.placeholder='备注（可选）';text.maxLength=20000;text.rows=3;
+      const actions=document.createElement('div'), details=document.createElement('details'), summary=document.createElement('summary');
+      actions.className='note-card-actions';
+      summary.textContent=note.body?'编辑备注':'添加备注';
+      const body=document.createElement('p');body.textContent=note.body;body.hidden=!note.body;
+      const save=document.createElement('button');save.textContent='保存备注';save.disabled=!token;
+      save.addEventListener('click',async()=>{try{await api('/'+note.id,'PATCH',{body:text.value});notify('');await load();}catch(e){notify(e.message);}});
+      const remove=document.createElement('button');remove.textContent='删除标注';remove.disabled=!token;
       remove.addEventListener('click',async()=>{try{await api('/'+note.id,'DELETE');await load();}catch(e){notify(e.message);}});
-      item.append(badge,quote,text,save,remove);list.append(item);
+      details.append(summary,text,save);actions.append(details,remove);item.append(quote,body,actions);list.append(item);
     }
     if(!data.notes.length)list.textContent='';
     highlightRanges();
   }
   async function load(){try{data=await api();if(revision===null)revision=data.progress?.revision||0;render();return data;}catch(e){notify(e.message);}}
-  async function add(kind){
+  async function add(){
     let target=selection;
     if(!target){notify('请先选中同一段原文。');return;}
-    try{await api('','POST',{...target,kind,body:editor.value});editor.value='';notify('已保存');await load();}catch(e){notify(e.message);}
+    highlighting=true;syncHighlight();
+    try{await api('','POST',{...target,kind:'highlight',body:''});selection=null;window.getSelection()?.removeAllRanges();highlightStatus.textContent='';notify('');await load();}catch(e){highlightStatus.textContent=e.message;notify(e.message);}finally{highlighting=false;syncHighlight();}
   }
-  for(const kind of ['note','highlight'])document.getElementById('add-'+kind).addEventListener('click',()=>add(kind));
+  addHighlight.addEventListener('pointerdown',event=>event.preventDefault());
+  addHighlight.addEventListener('click',add);
+  document.addEventListener('selectionchange',()=>{selection=selectedText();highlightStatus.textContent='';syncHighlight();});
   for(const name of ['wheel','touchstart','keydown'])window.addEventListener(name,()=>{interactive=true;},{passive:true});
   function progressPayload(){
     const block=current();if(!block)return null;const box=blockBounds(block);

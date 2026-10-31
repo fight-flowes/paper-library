@@ -183,6 +183,16 @@ def test_numeric_quantities_and_units_are_protected():
     assert segment.render_translation(translated + ' 2.8').endswith(' 2.8')
 
 
+def test_affiliation_numbers_do_not_hide_institution_names_from_model():
+    source = '1Huazhong University of Science and Technology, 2Lehigh University'
+    segment = render_markdown(source, '/asset', translation_slots=True).segments[0]
+    assert [fragment for _, fragment in segment.protected] == ['1', '2']
+    assert 'Huazhong University of Science and Technology' in segment.text
+    assert 'Lehigh University' in segment.text
+    first, second = (marker for marker, _ in segment.protected)
+    assert segment.render_translation(f'{first}华中科技大学，{second}理海大学') == '1华中科技大学，2理海大学'
+
+
 def test_reading_missing_cache_does_not_create_it(tmp_path):
     from paper_library.translation.service import TranslationConfig, TranslationService
     cache = tmp_path / 'absent/cache.sqlite3'
@@ -244,6 +254,53 @@ def test_model_receives_quoted_text_with_short_placeholders(tmp_path):
     service = TranslationService(TranslationConfig('http://local/v1','model',''), tmp_path/'cache.sqlite3', transport=httpx.MockTransport(handler))
     translated = service.translate('paper','version',segment)
     assert segment.render_translation(translated) == '我们发布 2.8k 首诗。'
+
+
+def test_missing_numeric_markers_are_repaired_before_caching(tmp_path):
+    from paper_library.translation.service import TranslationConfig, TranslationService
+    calls = []
+    def handler(request):
+        data = json.loads(json.loads(request.content)['messages'][-1]['content'])
+        calls.append(data)
+        if len(calls) == 1:
+            text = 'WildChat：ChatGPT 交互日志。'
+        else:
+            assert data['required_markers'] == ['⟦PH_0⟧', '⟦PH_1⟧']
+            assert data['validation_errors']
+            assert data['previous_translation'] == 'WildChat：ChatGPT 交互日志。'
+            text = 'WildChat：⟦PH_0⟧ 条 ChatGPT 交互日志，载于第 ⟦PH_1⟧ 届会议。'
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': text}}]})
+    service = TranslationService(TranslationConfig('http://local/v1', 'model', ''), tmp_path/'cache.sqlite3',
+                                 transport=httpx.MockTransport(handler))
+    segment = render_markdown('WildChat: 1M ChatGPT interaction logs. In 12th conference.', '/asset', translation_slots=True).segments[0]
+    result = service.translate('paper', 'version', segment)
+    assert len(calls) == 2
+    assert segment.integrity_warnings(result) == []
+    assert '1M' in segment.render_translation(result) and '12th' in segment.render_translation(result)
+    assert service.cached_record('paper', 'version', segment).warnings == ()
+
+
+def test_failed_repair_is_bounded_and_never_replaces_a_better_saved_translation(tmp_path):
+    from paper_library.translation.service import TranslationConfig, TranslationService
+    calls = []
+    def handler(request):
+        calls.append(request)
+        content = '中文 ⟦PH_0⟧ ⟦PH_1⟧' if len(calls) == 1 else '标记全部丢失'
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]})
+    service = TranslationService(TranslationConfig('http://local/v1', 'model', ''), tmp_path/'cache.sqlite3',
+                                 transport=httpx.MockTransport(handler))
+    segment = render_markdown('We use 10 examples and 20 controls.', '/asset', translation_slots=True).segments[0]
+    original = service.translate('paper', 'version', segment)
+    assert service.translate('paper', 'version', segment, force=True) == original
+    assert len(calls) == 4
+    assert service.cached('paper', 'version', segment) == original
+
+
+def test_damaged_marker_is_detected_and_not_exposed_in_reader():
+    segment = render_markdown('Index S-84 and S-87.', '/asset', translation_slots=True).segments[0]
+    damaged = '目录 S-⟦PH_0 和 S-⟦PH_1⟧'
+    assert segment.integrity_warnings(damaged)
+    assert '⟦PH_' not in segment.render_translation(damaged)
 
 
 def test_superscript_footnote_numbers_are_protected():
@@ -442,3 +499,17 @@ def test_distinct_service_instances_can_migrate_the_same_cache(tmp_path):
             assert 'generation' in columns
         connection.close()
     with ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(connect,range(4)))
+
+
+@pytest.mark.parametrize('token', ['<|INST>', '<|im_start|>'])
+def test_chat_control_tokens_are_protected_without_hiding_surrounding_prose(token):
+    source = f'output: {token} Hello, how are you?'
+    segment = render_markdown(source, '/asset', translation_slots=True).segments[0]
+    assert len(segment.protected) == 1
+    assert token not in segment.text
+    assert 'Hello, how are you?' in segment.text
+    marker, fragment = segment.protected[0]
+    assert fragment == token.replace('<', '&lt;').replace('>', '&gt;')
+    assert segment.render_translation(f'输出：{marker} 你好，你怎么样？') == (
+        f'输出：{fragment} 你好，你怎么样？'
+    )

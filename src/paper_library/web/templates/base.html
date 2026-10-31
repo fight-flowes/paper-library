@@ -6,9 +6,12 @@
     <title>{% block title %}论文阅读器{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='reader.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace-tools.css') }}">
+    {% block styles %}{% endblock %}
     <script defer src="{{ url_for('static', filename='reader.js') }}"></script>
     <script defer src="{{ url_for('static', filename='translation.js') }}"></script>
     <script defer src="{{ url_for('static', filename='jobs.js') }}"></script>
+    {% block scripts %}{% endblock %}
   </head>
   <body>
     {% block body %}

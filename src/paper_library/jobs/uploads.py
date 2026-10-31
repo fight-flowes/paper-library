@@ -126,7 +126,8 @@ class UploadStager:
             raise UploadError("主题必须为 1 到 120 个字符")
         if request.language not in {"en", "ch"}:
             raise UploadError("不支持的文档语言")
-        if self.libraries is not None and request.library_id not in self.libraries.discover():
+        available = (self.libraries.scan()[0] if hasattr(self.libraries, 'scan') else self.libraries.discover()) if self.libraries is not None else None
+        if available is not None and request.library_id not in available:
             raise UploadError("目标论文库不存在")
         return replace(request, subject=subject)
 

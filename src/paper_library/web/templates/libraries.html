@@ -7,6 +7,7 @@
     <p class="library-count">{{ libraries|length }} 个论文库</p>
     <p class="header-action"><a class="pdf-button" href="{{ url_for('management.import_page') }}">导入论文</a></p>
   </header>
+  {% if discovery_issues %}<p class="notice notice-warning" role="status">部分论文库暂不可用：{{ discovery_issues.keys()|join('、') }}。其他论文库仍可阅读，请在运行状态页检查。</p>{% endif %}
   <div class="library-cards">
     {% for library in libraries %}
       <section class="library-card">

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
@@ -69,10 +70,17 @@ def verify_backup(root):
     try:data=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
     except (OSError,ValueError) as exc:raise ValueError('备份清单无法读取') from exc
     if not isinstance(data,dict) or data.get('schema')!=1 or not isinstance(data.get('files'),dict):raise ValueError('不支持的备份格式')
+    try:
+        if not isinstance(data.get('created_at'),str):raise ValueError('missing creation time')
+        created=datetime.fromisoformat(data['created_at'])
+        if created.tzinfo is None:raise ValueError('missing timezone')
+    except ValueError as error:raise ValueError('备份创建时间格式无效') from error
     for name,expected in data['files'].items():
         relative=PurePosixPath(name)
         if relative.is_absolute() or '..' in relative.parts or '\\' in name or not relative.parts or relative.parts[0] not in {'libraries','state','cache'}:raise ValueError('备份包含不安全路径')
-        if not isinstance(expected,dict) or not isinstance(expected.get('sha256'),str) or type(expected.get('size')) is not int:
+        if (not isinstance(expected,dict) or not isinstance(expected.get('sha256'),str)
+                or not re.fullmatch(r'[a-f0-9]{64}',expected['sha256'])
+                or type(expected.get('size')) is not int or expected['size']<0):
             raise ValueError('备份文件清单格式无效')
         path=root/name
         if any(p.is_symlink() for p in [path,*path.parents] if p!=root.parent):raise ValueError('备份包含符号链接')
@@ -143,12 +151,35 @@ def mirror_backup(source, directory):
             shutil.rmtree(stage)
 
 
+def read_backup_status(settings):
+    path = settings.paths.state / 'backup-status.json'
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return {'status':'error','error':'备份状态文件无法读取'}
+    if not isinstance(value,dict):
+        return {'status':'error','error':'备份状态文件格式无效'}
+    if 'status' in value and value['status'] not in ('ok','error','waiting'):
+        return {'status':'error','error':'备份状态字段格式无效'}
+    if 'remote_mirror' in value and not isinstance(value['remote_mirror'],dict):
+        return {**value,'status':'error','remote_mirror':{'status':'error'},'error':'远端备份状态格式无效'}
+    mirror=value.get('remote_mirror',{})
+    if 'status' in mirror and mirror['status'] not in ('ok','error'):
+        return {**value,'status':'error','remote_mirror':{'status':'error'},'error':'远端备份状态字段格式无效'}
+    if any(key in value and not isinstance(value[key],str) for key in ('checked_at','verified_at')):
+        return {'status':'error','error':'备份状态时间字段格式无效'}
+    if 'verified_at' in mirror and not isinstance(mirror['verified_at'],str):
+        return {**value,'status':'error','remote_mirror':{'status':'error'},'error':'远端备份时间字段格式无效'}
+    return value
+
+
 def record_backup_status(settings, **values):
     from .publication import write_json
     path = settings.paths.state / 'backup-status.json'
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        previous = json.loads(path.read_text())
-    except (OSError, ValueError):
-        previous = {}
+    previous = read_backup_status(settings)
+    if values.get('status')=='ok' and 'error' not in values:
+        previous.pop('error',None)
     write_json(path, {**previous, **values, 'checked_at': datetime.now(timezone.utc).isoformat()})

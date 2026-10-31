@@ -146,6 +146,44 @@ def test_complete_supports_warnings_and_heartbeat_extends_lease(tmp_path: Path) 
     assert completed.stage is JobStage.COMPLETED
 
 
+def test_reconcile_only_completed_jobs_with_readable_translation_notices(tmp_path: Path) -> None:
+    clock = Clock()
+    repository = JobRepository(tmp_path / 'jobs.sqlite3', clock=clock)
+
+    def finished(*, failed=0, pending=0, other_warning=False, integrity_known=True):
+        job = repository.create(new_job(upload_name=f'{failed}-{pending}-{other_warning}/source.pdf'))
+        repository.claim_next('runner')
+        outcomes = {
+            'translation': {'status': 'warning', 'message': '阅读提示 1 段',
+                            'failed': failed, 'reading_warnings': 1},
+            'guide': {'status': 'warning' if other_warning else 'completed'},
+        }
+        if integrity_known:
+            outcomes['translation']['integrity_warnings'] = 0
+        repository.update(job.id, JobStage.TRANSLATING,
+                          JobProgress(total=2, cached=2-failed-pending, failed=failed, pending=pending),
+                          outcomes=outcomes)
+        repository.complete(job.id, warnings=True)
+        return repository.get(job.id)
+
+    soft = finished()
+    failed = finished(failed=1)
+    pending = finished(pending=1)
+    guide = finished(other_warning=True)
+    legacy = finished(integrity_known=False)
+    original_finished_at = soft.updated_at
+
+    assert repository.reconcile_quality_notices() == 1
+    saved = repository.get(soft.id)
+    assert saved.state is JobState.COMPLETED
+    assert saved.outcomes['translation']['status'] == 'completed'
+    assert saved.outcomes['translation']['reading_warnings'] == 1
+    assert saved.updated_at == original_finished_at
+    assert repository.reconcile_quality_notices() == 0
+    for job in (failed, pending, guide, legacy):
+        assert repository.get(job.id).state is JobState.COMPLETED_WITH_WARNINGS
+
+
 def test_two_repositories_cannot_claim_the_same_job(tmp_path: Path) -> None:
     database = tmp_path / "jobs.sqlite3"
     first = JobRepository(database)
@@ -266,3 +304,52 @@ def test_queue_limit_and_cancelled_job_cannot_complete(tmp_path):
     with pytest.raises(InvalidTransition):repo.complete(job.id)
     repo.cancel(job.id)
     assert repo.get(job.id).state==JobState.CANCELLED
+
+
+@pytest.mark.parametrize('other_warning', [False, True])
+def test_metadata_notice_reconciliation_preserves_other_results(tmp_path,other_warning):
+    import json
+    from test_ingest_service import write_library
+    from paper_library.catalog import PaperPaths
+    pdf=tmp_path/'source.pdf';pdf.write_bytes(b'%PDF-test')
+    libraries,library=write_library(tmp_path/'libraries',pdf)
+    paths=PaperPaths.for_id(library,'ws-p0001')
+    paths.metadata.write_text(json.dumps({'enrichment':{'status':'verified'},
+                                         'bibliography':{'canonical_title':'Old paper'}}))
+    repository=JobRepository(tmp_path/'jobs.sqlite3')
+    job=repository.create(new_job())
+    repository.claim_next('runner')
+    outcomes={'metadata':{'status':'warning','reason':'conflict'},
+              'translation':{'status':'completed','reading_warnings':4},
+              'guide':{'status':'warning' if other_warning else 'completed'}}
+    repository.update(job.id,JobStage.PUBLISHED,JobProgress(total=2,translated=2),
+                      paper_id='ws-p0001',outcomes=outcomes)
+    repository.complete(job.id,warnings=True)
+    completed_at=repository.get(job.id).updated_at
+    assert repository.reconcile_metadata_notices(libraries)==1
+    current=repository.get(job.id)
+    assert current.outcomes['metadata']['status']=='completed'
+    assert current.outcomes['translation']==outcomes['translation']
+    assert current.outcomes['guide']==outcomes['guide']
+    assert current.updated_at==completed_at
+    assert current.state==(JobState.COMPLETED_WITH_WARNINGS if other_warning else JobState.COMPLETED)
+    assert repository.reconcile_metadata_notices(libraries)==0
+
+
+def test_metadata_notice_requires_verified_catalog_and_metadata_agreement(tmp_path):
+    import json
+    from test_ingest_service import write_library
+    from paper_library.catalog import PaperPaths
+    pdf=tmp_path/'source.pdf';pdf.write_bytes(b'%PDF-test')
+    libraries,library=write_library(tmp_path/'libraries',pdf)
+    paths=PaperPaths.for_id(library,'ws-p0001')
+    repository=JobRepository(tmp_path/'jobs.sqlite3')
+    job=repository.create(new_job());repository.claim_next('runner')
+    repository.update(job.id,JobStage.PUBLISHED,paper_id='ws-p0001',
+                      outcomes={'metadata':{'status':'warning','reason':'conflict'}})
+    repository.complete(job.id,warnings=True)
+    for status,title in [('ambiguous','Old paper'),('verified','A Different Paper')]:
+        paths.metadata.write_text(json.dumps({'enrichment':{'status':status},
+                                             'bibliography':{'canonical_title':title}}))
+        assert repository.reconcile_metadata_notices(libraries)==0
+        assert repository.get(job.id).outcomes['metadata']['status']=='warning'

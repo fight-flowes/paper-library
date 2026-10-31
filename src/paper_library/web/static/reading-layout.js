@@ -3,6 +3,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if(!sidebar)return;
   const toggle=document.querySelector('.sidebar-toggle'), scrim=document.querySelector('.sidebar-scrim');
   const narrow=matchMedia('(max-width:900px)');
+  const toolbar=document.querySelector('.paper-toolbar');
+  const toolbarSize=()=>document.documentElement.style.setProperty('--reader-toolbar-height',toolbar.getBoundingClientRect().height+'px');
+  new ResizeObserver(toolbarSize).observe(toolbar);toolbarSize();
   const toc=document.getElementById('toc-panel'), notes=document.getElementById('notes-panel');
   const tocButton=document.getElementById('show-toc'), notesButton=document.getElementById('open-notes');
   const drawer=document.getElementById('library-drawer');
@@ -76,7 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if(event.key==='Escape') { document.querySelector('.reading-more')?.removeAttribute('open'); if(narrow.matches&&!sidebar.hidden){openSidebar(false);toggle.focus();} }
     if(event.key==='Tab'&&narrow.matches&&!sidebar.hidden){
-      const focusable=[toggle,...sidebar.querySelectorAll('a[href],button,textarea')].filter(el=>el.getClientRects().length&&!el.disabled);
+      const focusable=[toggle,...sidebar.querySelectorAll('a[href],button,textarea,input,summary')].filter(el=>el.checkVisibility()&&!el.disabled);
       const first=focusable[0],last=focusable.at(-1);
       if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
       else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}

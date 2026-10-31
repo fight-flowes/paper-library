@@ -13,41 +13,61 @@
 
   <form class="import-form" action="{{ url_for('management.create_job') }}" method="post" enctype="multipart/form-data">
     <input type="hidden" name="management_token" value="{{ management_token }}">
-    <label>PDF 文件
-      <span class="import-file-control">
-        <input type="file" name="pdf" id="import-pdf" accept="application/pdf,.pdf" required>
+    <label><span id="import-pdf-label">PDF 文件</span>
+      <span class="import-file-control" data-max-bytes="{{ upload_max_mb * 1024 * 1024 }}">
+        <input type="file" name="pdf" id="import-pdf" aria-labelledby="import-pdf-label" accept="application/pdf,.pdf" required aria-describedby="import-file-hint import-file-error">
         <span class="import-file-button" aria-hidden="true">选择文件</span>
         <span id="import-file-name" aria-hidden="true">未选择文件</span>
       </span>
+      <small id="import-file-hint">也可拖入 PDF，最大 {{ upload_max_mb }} MB</small>
+      <small id="import-file-error" class="import-field-error" role="alert"></small>
     </label>
-    <label>论文库
-      <select name="library_id" id="import-library" required>
+    <div class="subject-field">
+      <label for="import-library">论文库</label>
+      <div class="subject-controls">
+        <select name="library_id" id="import-library" required>
         {% for library_id, descriptor in libraries.items() %}
-          <option value="{{ library_id }}">{{ descriptor.config.name }}</option>
+          <option value="{{ library_id }}"{% if selected_library == library_id %} selected{% endif %}>{{ descriptor.config.name }}</option>
         {% endfor %}
-      </select>
-    </label>
+        </select>
+        <button type="button" id="add-library" class="import-add-button" aria-label="新增论文库" title="新增论文库" aria-expanded="false" aria-controls="new-library" {% if not mutations_enabled %}disabled{% endif %}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div id="new-library" class="import-inline-editor" hidden data-url="{{ url_for('management.create_library_route') }}">
+        <label for="new-library-name">新论文库名称</label>
+        <input id="new-library-name" maxlength="120" placeholder="例如：强化学习" aria-describedby="library-error">
+        <div class="subject-controls">
+          <button type="button" id="save-library">创建并选中</button>
+          <button type="button" id="cancel-library">取消</button>
+        </div>
+        <small id="library-error" class="import-field-error" role="alert"></small>
+      </div>
+    </div>
     <div class="subject-field">
       <label for="import-subject">研究主题</label>
       <div class="subject-controls">
         <select name="subject" id="import-subject" required></select>
-        <button type="button" id="add-subject" aria-expanded="false" aria-controls="new-subject">新增主题</button>
+        <button type="button" id="add-subject" class="import-add-button" aria-label="新增主题" title="新增主题" aria-expanded="false" aria-controls="new-subject" {% if not mutations_enabled %}disabled{% endif %}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
-      <div id="new-subject" hidden data-url="{{ url_for('management.create_subject') }}">
+      <div id="new-subject" class="import-inline-editor" hidden data-url="{{ url_for('management.create_subject') }}">
         <label for="new-subject-name">新主题名称</label>
         <input id="new-subject-name" maxlength="120" placeholder="输入研究主题">
         <div class="subject-controls">
           <button type="button" id="save-subject">保存并选中</button>
           <button type="button" id="cancel-subject">取消</button>
         </div>
-        <small id="subject-error" role="alert"></small>
+        <small id="subject-error" class="import-field-error" role="alert"></small>
       </div>
     </div>
-    <label>文档语言
-      <select name="language"><option value="en">英文</option><option value="ch">中文</option></select>
-    </label>
-    <label><input type="checkbox" name="enrich" value="1" checked> Tavily 检索并修复书目信息</label>
-    <label><input type="checkbox" name="auto_translate" value="1" checked> 解析后自动翻译</label>
+    <div class="subject-field">
+      <label for="import-language">文档语言</label>
+      <select name="language" id="import-language"><option value="en"{% if import_defaults.language == 'en' %} selected{% endif %}>英文</option><option value="ch"{% if import_defaults.language == 'ch' %} selected{% endif %}>中文</option></select>
+    </div>
+    <label><input type="checkbox" name="enrich" value="1"{% if import_defaults.enrich == '1' %} checked{% endif %}> 自动检索并核对书目信息</label>
+    <label><input type="checkbox" name="auto_translate" value="1"{% if import_defaults.auto_translate == '1' %} checked{% endif %}> 解析后自动翻译</label>
     <button type="submit" class="pdf-button" {% if not mutations_enabled %}disabled{% endif %}>开始导入</button>
   </form>
   <script type="application/json" id="library-subjects">{{ subjects_by_library | tojson }}</script>
@@ -56,7 +76,7 @@
     <h2>最近任务</h2>
     <ol class="paper-list">
       {% for job in jobs %}
-        <li><a href="{{ url_for('management.job_detail', job_id=job.id) }}">{{ job.original_filename }} · {{ {'queued':'排队中','running':'处理中','completed':'已完成','completed_with_warnings':'已完成，有待处理项','failed':'失败','cancelled':'已取消'}.get(job.state.value,job.state.value) }}</a></li>
+        <li><a href="{{ url_for('management.job_detail', job_id=job.id) }}">{{ job.original_filename }} · {{ {'queued':'排队中','running':'处理中','completed':'已完成','completed_with_warnings':'已完成，需核对','failed':'失败','cancelled':'已取消'}.get(job.state.value,job.state.value) }}</a></li>
       {% else %}<li>暂无任务</li>{% endfor %}
     </ol>
   </section>

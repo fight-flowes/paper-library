@@ -13,8 +13,8 @@ def main(argv=None):
     args=parser.parse_args(argv)
     root=Path(__file__).resolve().parents[3]
     commands=[[sys.executable,'-m','pytest','-q']]
-    if args.browser:commands.append(['node','tests/browser/management.cjs'])
-    if args.live:commands.extend(['node',f'tests/browser/{name}.cjs'] for name in ('layout','workspace','translation','guide'))
+    if args.browser:commands.extend(['node',f'tests/browser/{name}.cjs'] for name in ('management','settings'))
+    if args.live:commands.extend(['node',f'tests/browser/{name}.cjs'] for name in ('layout','workspace','translation','guide','frontend-tools'))
     for command in commands:
         print('检查：'+' '.join(command),flush=True)
         result=subprocess.run(command,cwd=root,env={**os.environ,"PAPER_TEST_PYTHON":sys.executable})

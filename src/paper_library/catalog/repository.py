@@ -25,33 +25,52 @@ class LibraryRepository:
     def __init__(self, root: Path):
         self.root = root.expanduser().resolve()
 
-    def discover(self) -> dict[str, LibraryDescriptor]:
+    def scan(self) -> tuple[dict[str, LibraryDescriptor], dict[str, str]]:
         try:
             children = sorted(self.root.iterdir(), key=lambda path: path.name)
         except OSError as exc:
             raise LibraryError(f"无法读取论文库目录：{self.root}") from exc
         result: dict[str, LibraryDescriptor] = {}
+        issues: dict[str, str] = {}
         for child in children:
-            if child.name.startswith(".") or child.is_symlink() or not child.is_dir():
+            if child.name.startswith('.'):
                 continue
-            config_path = child / "library.toml"
-            catalog_path = child / "catalog.tsv"
-            if not config_path.is_file() and not catalog_path.is_file():
-                continue
-            if config_path.is_symlink() or catalog_path.is_symlink():
-                continue
-            config = _read_config(config_path)
-            if child.name != config.id:
-                raise LibraryError(f"论文库目录名必须与 id 一致：{child.name} != {config.id}")
-            if config.id in result:
-                raise LibraryError(f"论文库 ID 重复：{config.id}")
-            result[config.id] = LibraryDescriptor(child.resolve(), config)
+            try:
+                if child.is_symlink() or not child.is_dir():
+                    continue
+                config_path = child / 'library.toml'
+                catalog_path = child / 'catalog.tsv'
+                if not config_path.is_file() and not catalog_path.is_file():
+                    continue
+                if config_path.is_symlink() or catalog_path.is_symlink():
+                    continue
+                config = _read_config(config_path)
+                if child.name != config.id:
+                    raise LibraryError(f'论文库目录名必须与 id 一致：{child.name} != {config.id}')
+                result[config.id] = LibraryDescriptor(child.resolve(), config)
+            except (LibraryError, OSError) as error:
+                issues[child.name] = str(error)
+        return result, issues
+
+    def discover(self) -> dict[str, LibraryDescriptor]:
+        result, issues = self.scan()
+        if issues:
+            raise LibraryError(next(iter(issues.values())))
         return result
 
     def load(self, library_id: str) -> LibrarySnapshot:
-        descriptor = self.discover().get(library_id)
-        if descriptor is None:
+        if not LIBRARY_ID_PATTERN.fullmatch(library_id):
             raise LibraryError(f"未找到论文库：{library_id}")
+        try:
+            root = self.root / library_id
+            if root.is_symlink() or not root.is_dir() or any((root / name).is_symlink() for name in ('library.toml', 'catalog.tsv')):
+                raise LibraryError(f"未找到论文库：{library_id}")
+            config = _read_config(root / 'library.toml')
+            if config.id != library_id:
+                raise LibraryError('论文库目录名必须与 id 一致')
+            descriptor = LibraryDescriptor(root.resolve(), config)
+        except OSError as error:
+            raise LibraryError(f'无法读取论文库：{library_id}') from error
         return load_library(descriptor.root, descriptor=descriptor)
 
     def find_paper(self, library_id: str, paper_id: str) -> PaperRecord | None:
@@ -60,13 +79,17 @@ class LibraryRepository:
     def validate_all(self) -> tuple[str, ...]:
         warnings: list[str] = []
         keys: dict[str, str] = {}
-        for library_id in self.discover():
+        descriptors, issues = self.scan()
+        warnings.extend(f'{key}: {value}' for key, value in issues.items())
+        for library_id in descriptors:
             try:
                 snapshot = self.load(library_id)
             except LibraryError as exc:
                 warnings.append(f"{library_id}: {exc}")
                 continue
             warnings.extend(f"{library_id}: {warning}" for warning in snapshot.warnings)
+            if any(snapshot.descriptor.root.glob('.transactions/*/journal.json')):
+                warnings.append(f'{library_id}: 存在未恢复的发布事务')
             for paper in snapshot.papers:
                 folded = paper.id.casefold()
                 if folded in keys:
@@ -79,6 +102,9 @@ class LibraryRepository:
                         warnings.append(f"{library_id}/{paper.id}: {label} 文件缺失")
                 if not paths.images.is_dir() or paths.images.is_symlink():
                     warnings.append(f"{library_id}/{paper.id}: images 目录缺失")
+                if paths.metadata.is_file():
+                    _, metadata_issues = read_metadata(snapshot.descriptor.root, paper)
+                    warnings.extend(f'{library_id}/{paper.id}: {issue}' for issue in metadata_issues)
         return tuple(warnings)
 
 
@@ -92,20 +118,23 @@ def load_library(root: Path, *, descriptor: LibraryDescriptor | None = None) -> 
     papers: list[PaperRecord] = []
     warnings: list[str] = []
     seen: set[str] = set()
-    with handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        if tuple(reader.fieldnames or ()) != CATALOG_COLUMNS:
-            raise LibraryError("catalog.tsv 表头不符合新版格式")
-        for line_number, row in enumerate(reader, start=2):
-            try:
-                paper = _parse_row(row)
-                for key in (paper.id, *paper.aliases):
-                    if key.casefold() in seen:
-                        raise ValueError(f"论文 ID 或别名重复：{key}")
-                seen.update(key.casefold() for key in (paper.id, *paper.aliases))
-                papers.append(paper)
-            except (TypeError, ValueError) as exc:
-                warnings.append(f"目录第 {line_number} 行已跳过：{exc}")
+    try:
+        with handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if tuple(reader.fieldnames or ()) != CATALOG_COLUMNS:
+                raise LibraryError("catalog.tsv 表头不符合新版格式")
+            for line_number, row in enumerate(reader, start=2):
+                try:
+                    paper = _parse_row(row)
+                    for key in (paper.id, *paper.aliases):
+                        if key.casefold() in seen:
+                            raise ValueError(f"论文 ID 或别名重复：{key}")
+                    seen.update(key.casefold() for key in (paper.id, *paper.aliases))
+                    papers.append(paper)
+                except (TypeError, ValueError) as exc:
+                    warnings.append(f"目录第 {line_number} 行已跳过：{exc}")
+    except (UnicodeError, csv.Error) as exc:
+        raise LibraryError('catalog.tsv 内容无法解析') from exc
     return LibrarySnapshot(descriptor, tuple(papers), tuple(warnings))
 
 
@@ -117,7 +146,21 @@ def read_metadata(library_root: Path, paper: PaperRecord) -> tuple[dict[str, Any
         return {}, ("metadata.json 缺失或无法读取，已使用目录信息。",)
     if not isinstance(value, dict):
         return {}, ("metadata.json 不是 JSON 对象，已使用目录信息。",)
-    return value, ()
+    warnings=[]
+    for key in ('bibliography','enrichment'):
+        if key in value and not isinstance(value[key],dict):
+            value[key]={}
+            warnings.append(f'metadata.json 的 {key} 格式无效，已使用目录信息。')
+    bibliography=value.get('bibliography',{})
+    for key in ('canonical_title','venue','venue_type','doi','official_url','publication_date'):
+        if key in bibliography and not isinstance(bibliography[key],str):
+            bibliography.pop(key)
+            warnings.append(f'书目字段 {key} 格式无效，已使用目录信息。')
+    if 'authors' in bibliography and (not isinstance(bibliography['authors'],list)
+            or any(not isinstance(author,str) for author in bibliography['authors'])):
+        bibliography.pop('authors')
+        warnings.append('作者字段格式无效，已保留原文供核对。')
+    return value, tuple(warnings)
 
 
 def _read_config(path: Path) -> LibraryConfig:
@@ -125,6 +168,8 @@ def _read_config(path: Path) -> LibraryConfig:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise LibraryError(f"无法读取 library.toml：{path}") from exc
+    if not isinstance(raw, dict):
+        raise LibraryError('library.toml 格式无效')
     if raw.get("schema_version") != 1:
         raise LibraryError("library.toml schema_version 必须为 1")
     library_id = raw.get("id")

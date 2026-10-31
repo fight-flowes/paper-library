@@ -65,8 +65,8 @@ def test_service_reuses_cache_and_rejects_changed_source(tmp_path):
     progress = []
     first = service.generate(path, progress=lambda d,t:progress.append((d,t)))
     assert service.generate(path) == first
-    assert len(calls) == 1 and calls[0]['temperature'] == 0.1
-    assert progress == [(0,2),(2,2)]
+    assert len(calls) == 2 and all(call['temperature'] == 0.1 for call in calls)
+    assert progress == [(0,4),(2,4),(4,4)]
     with pytest.raises(ValueError, match='取消'):
         service.generate(path, cancelled=lambda:True)
     path.write_text('Changed source')
@@ -147,8 +147,8 @@ def test_failed_force_run_resumes_instead_of_reusing_old_output(tmp_path):
     progress = []
     service._ask = ask
     service.generate(path,progress=lambda d,t:progress.append((d,t)))
-    assert len(calls) == 2
-    assert progress[0] == (0,1)
+    assert len(calls) == 4
+    assert progress[0] == (0,2)
     assert not (tmp_path/'.structure-cache'/'pending.json').exists()
 
 
@@ -168,3 +168,35 @@ def test_retry_unknown_rechecks_only_uncertain_batches(tmp_path):
     service.generate(path);result=service.generate(path)
     assert calls.count('source-1')==2 and calls.count('source-3')==1
     assert all(r['role']=='body' for r in result['annotations'])
+
+
+def test_reviewed_toc_removes_false_headings_without_losing_anchors_or_text():
+    from paper_library.web.markdown import render_markdown
+    from paper_library.reading.structure import build_document
+    source = '# Paper title\n\n# 1 Introduction\n\nSome introduction text.\n\n# Figure 1: a caption\n\nExperimental setup\n\nSome setup details.\n'
+    blocks = build_blocks(source)
+    rows = [{'id':b['id'], 'role':'body', 'toc':False} for b in blocks]
+    rows[0].update(role='title')
+    rows[1].update(role='heading', level=1, toc=True)
+    rows[3].update(role='caption')
+    rows[4].update(role='heading', level=2, toc=True)
+    baseline = render_markdown(source, '/asset', translation_slots=True)
+    rendered = render_markdown(source, '/asset', translation_slots=True, annotations=rows)
+    assert [h.text for h in rendered.headings] == ['1 Introduction', 'Experimental setup']
+    assert rendered.segments == baseline.segments
+    assert 'id="figure-1-a-caption"' in rendered.html
+    assert '<p id="figure-1-a-caption"' in rendered.html
+    assert 'Paper title' in rendered.html
+    document = build_document(source, rows)
+    assert any('Figure 1: a caption' in b['text'] for b in document['blocks'])
+    assert next(s for s in document['sections'] if s['title']=='Experimental setup')['parent']=='1-introduction'
+    assert all(f'id="{b["id"]}"' in rendered.html for b in document['blocks'])
+
+
+def test_reviewed_toc_flags_are_validated_without_changing_legacy_annotations():
+    blocks = build_blocks('# A heading\n\nBody.')
+    legacy = [{'id':b['id'],'role':'body'} for b in blocks]
+    assert validate_annotations(legacy, blocks) == legacy
+    for toc in ('yes', True):
+        with pytest.raises(ValueError):
+            validate_annotations([{**legacy[0], 'toc':toc}, legacy[1]], blocks)

@@ -7,7 +7,7 @@ from mdit_py_plugins.dollarmath import dollarmath_plugin
 
 from paper_library.web.markdown import _assign_heading_ids
 
-BLOCK_TYPES = {'paragraph_open', 'table_open', 'html_block', 'fence', 'code_block',
+BLOCK_TYPES = {'heading_open', 'paragraph_open', 'table_open', 'html_block', 'fence', 'code_block',
                'math_block', 'blockquote_open', 'bullet_list_open', 'ordered_list_open'}
 
 
@@ -20,7 +20,7 @@ def build_document(source, annotations=None):
         from paper_library.web.markdown import render_markdown
         effective = {h.id: h for h in render_markdown(source, '/assets', annotations=annotations).headings}
     lines = source.splitlines(keepends=True)
-    sections, blocks = [], []
+    sections, blocks, block_lines, section_lines = [], [], {}, {}
     current = None
     for token in tokens:
         heading = next(headings) if token.type == 'heading_open' else None
@@ -28,6 +28,8 @@ def build_document(source, annotations=None):
             key = heading.id if heading else f'source-{token.map[0]+1}' if token.map else ''
             heading = effective.get(key) if token.type == 'heading_open' or (token.type == 'paragraph_open' and token.level == 0) else None
         if heading is not None:
+            if token.map:
+                section_lines[heading.id] = token.map[0] + 1
             numbered = re.match(r'^((?:\d+|[A-Z])(?:\.\d+)*)\.?\s+', heading.text)
             level = len(numbered.group(1).split('.')) if numbered and effective is None else heading.level
             current = {'id': heading.id, 'title': heading.text, 'level': level,
@@ -38,16 +40,18 @@ def build_document(source, annotations=None):
                     break
             sections.append(current)
         elif token.level == 0 and token.map and token.type in BLOCK_TYPES:
+            block_id = token.attrGet('id') if token.type == 'heading_open' else f'source-{token.map[0] + 1}'
             if current is None:
-                current = {'id': f'source-{token.map[0] + 1}', 'title': '正文', 'level': 1, 'blocks': [], 'parent': None}
+                current = {'id': block_id, 'title': '正文', 'level': 1, 'blocks': [], 'parent': None}
                 sections.append(current)
             start, end = token.map
-            block = {'id': f'source-{start + 1}', 'text': ''.join(lines[start:end]).strip()}
+            block = {'id': block_id, 'text': ''.join(lines[start:end]).strip()}
             if block['text']:
                 blocks.append(block)
                 current['blocks'].append(block)
+                block_lines[block_id] = start + 1
     return {'document_version': hashlib.sha256(source.encode()).hexdigest(),
-            'sections': sections, 'blocks': blocks}
+            'sections': sections, 'blocks': blocks, 'block_lines': block_lines, 'section_lines': section_lines}
 
 
 def chunk_section(section, limit):

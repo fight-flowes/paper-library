@@ -3,10 +3,12 @@
 {% block content %}
   <p><a href="{{ url_for('management.import_page') }}">← 导入论文</a></p>
   <article class="job-card" data-job-url="{{ url_for('management.job_status', job_id=job.id) }}" data-enrich="{{ 'true' if job.enrich else 'false' }}" data-auto-translate="{{ 'true' if job.auto_translate else 'false' }}">
-    <h1>{{ job.original_filename }}</h1>
-    <p>{{ job.library_id }} · {{ job.subject }}</p>
+    <h1 data-job-title>{{ title }}</h1>
+    <p class="job-source-file" data-job-filename{% if title == job.original_filename %} hidden{% endif %}>{{ job.original_filename }}</p>
+    <p><span data-job-library>{{ library_name }}</span> · {{ job.subject }}</p>
     <ol class="job-stages" data-job-stages aria-label="导入阶段"></ol>
     <p class="job-state" data-job-state role="status" aria-live="polite">正在获取任务状态…</p>
+    <p class="job-summary" data-job-summary></p>
     <p data-job-detail></p>
     <div class="job-progress">
       <progress data-job-progress aria-label="当前阶段进度"></progress>

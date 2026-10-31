@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
+import html
 import re
 import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -21,8 +22,10 @@ _TRUSTED_DOMAINS = frozenset(
         "aclanthology.org",
         "openreview.net",
         "arxiv.org",
+        "api.crossref.org",
         "doi.org",
         "nature.com",
+        "proceedings.iclr.cc",
     }
 )
 _MONTHS = {
@@ -142,6 +145,7 @@ def enrich_bibliography(
     year: str,
     venue: str,
     gateway: Gateway,
+    *, query: str | None = None, acl_lookup=None,
 ) -> EnrichmentResult:
     """Resolve one paper title without allowing lookup failures to escape."""
 
@@ -149,7 +153,7 @@ def enrich_bibliography(
     request_ids: list[str] = []
     base = {
         "searched_at": searched_at,
-        "query": title,
+        "query": query or title,
         "source_url": None,
         "source_domain": None,
         "gateway_request_ids": request_ids,
@@ -165,7 +169,7 @@ def enrich_bibliography(
         return _unavailable(base, ready.message or "本机检索服务未就绪")
 
     try:
-        searched = gateway.search(f'"{title}"')
+        searched = gateway.search(query if query is not None else f'"{title}"')
     except Exception as error:
         return _unavailable(base, str(error))
     _append_request_id(request_ids, searched)
@@ -192,10 +196,21 @@ def enrich_bibliography(
                     _merge_search_payloads(search_payloads),
                 )
     if not candidates:
-        return EnrichmentResult("not_found", None, {}, {**base, "message": "未找到匹配论文"})
+        return EnrichmentResult("not_found", None, {}, {**base, "message": "未找到匹配论文", "candidates": []})
+    base['candidates'] = _candidate_summaries(candidates)
     winner, *remaining = candidates
-    if winner.score < 0.9 or (remaining and winner.score - remaining[0].score < 0.08):
-        return EnrichmentResult("ambiguous", None, {}, {**base, "message": "检索结果无法唯一确认"})
+    # A shortened search title may be enough to inspect one trusted source;
+    # the extracted official title is still checked against the local paper.
+    inspectable = winner.domain in _TRUSTED_DOMAINS and winner.score >= 0.78
+    if (winner.score < 0.9 and not inspectable) or (remaining and winner.score - remaining[0].score < 0.08):
+        return EnrichmentResult("ambiguous", None, {}, {**base, "message": "检索结果无法唯一确认",
+                                                         "candidates": _candidate_summaries(candidates)})
+
+    if winner.domain == 'aclanthology.org' and acl_lookup is not None:
+        official = acl_lookup.lookup(winner.url)
+        if official.status == 'verified':
+            return EnrichmentResult(official.status, official.confidence, official.bibliography,
+                                    {**base, **official.enrichment})
 
     try:
         extracted = gateway.extract([winner.url])
@@ -218,11 +233,18 @@ def enrich_bibliography(
     return EnrichmentResult("verified", round(min(winner.score, 1.0), 2), bibliography, base)
 
 
+def _candidate_summaries(candidates: list[_Candidate]) -> list[dict[str, object]]:
+    return [dict(url=item.url, title=item.title, domain=item.domain, score=round(item.score, 2))
+            for item in candidates[:5]
+            if item.domain in _TRUSTED_DOMAINS and urlparse(item.url).scheme == 'https']
+
+
 @dataclass(frozen=True)
 class _Candidate:
     url: str
     domain: str
     score: float
+    title: str = ''
 
 
 def _rank_candidates(
@@ -245,18 +267,29 @@ def _rank_candidates(
         if not isinstance(candidate_title, str) or not isinstance(url, str):
             continue
         candidate_normalized = _normalize(candidate_title)
-        domain = urlparse(url).netloc.casefold().removeprefix("www.")
-        if domain == 'aclanthology.org' and urlparse(url).path.endswith('.pdf'):
-            url = 'https://aclanthology.org/' + urlparse(url).path.strip('/').removesuffix('.pdf') + '/'
+        parsed = urlparse(url)
+        domain = (parsed.hostname or '').casefold().removeprefix('www.')
+        arxiv_id = _arxiv_id(url)
+        if arxiv_id:
+            url = f'https://arxiv.org/abs/{arxiv_id}'
+            # Search display titles are often shortened; only use the explicit
+            # arXiv title field, never an arbitrary mention in the snippet.
+            explicit_title = re.search(r'(?mi)^#\s*Title:\s*([^\n]+)', content or '')
+            if explicit_title and re.search(r'\.\.\.|…', candidate_title):
+                candidate_normalized = _normalize(explicit_title[1].split('[...]', 1)[0])
+        acl_id = _acl_id(url)
+        if acl_id and urlparse(url).path.endswith('.pdf'):
+            url = f'https://aclanthology.org/{acl_id}/'
+        display_title = re.sub(r'^\[\d{4}\.\d{4,5}\]\s*', '', candidate_title)
+        display_prefix = _normalize(re.split(r'\.\.\.|…', display_title, maxsplit=1)[0])
+        truncated = bool(re.search(r'\.\.\.|…', candidate_title))
         if (
             candidate_normalized == normalized_title
             or candidate_normalized.endswith(f" {normalized_title}")
             or candidate_normalized.startswith(f"{normalized_title} ")
         ):
             score = 0.8
-        elif (domain == 'nature.com' and re.search(r'\.\.\.|…', candidate_title)
-              and len(_normalize(re.split(r'\.\.\.|…', candidate_title)[0]).split()) >= 5
-              and normalized_title.startswith(_normalize(re.split(r'\.\.\.|…', candidate_title)[0]))):
+        elif truncated and len(display_prefix.split()) >= 5 and normalized_title.startswith(display_prefix):
             score = 0.72
         elif _token_overlap(normalized_title, candidate_normalized) >= 0.95:
             score = 0.72
@@ -277,7 +310,7 @@ def _rank_candidates(
             score += 0.03
         if venue and venue.casefold() in evidence:
             score += 0.02
-        candidate = _Candidate(url, domain, score)
+        candidate = _Candidate(url, domain, score, candidate_title)
         work_key = _candidate_work_key(candidate)
         existing = candidates_by_work.get(work_key)
         if existing is None or _candidate_sort_key(candidate) < _candidate_sort_key(existing):
@@ -308,8 +341,13 @@ def _extract_bibliography(
         return _extract_acl_bibliography(fallback_title, url, raw_content)
     if domain == "arxiv.org":
         return _extract_arxiv_bibliography(fallback_title, url, raw_content)
+    if domain == "proceedings.iclr.cc":
+        return _extract_iclr_bibliography(url, raw_content)
+    observed_title = _observed_title(raw_content, fallback_title)
+    if not observed_title:
+        return {}
     bibliography: dict[str, object] = {
-        "canonical_title": _first_heading(raw_content) or fallback_title,
+        "canonical_title": observed_title,
         "official_url": url,
     }
     if domain == 'nature.com':
@@ -333,7 +371,7 @@ def _extract_bibliography(
         bibliography["publication_date"] = date
     doi = _field(raw_content, "DOI")
     if doi:
-        bibliography["doi"] = doi.removeprefix("https://doi.org/")
+        bibliography["doi"] = normalize_doi(doi)
     return bibliography
 
 
@@ -345,13 +383,15 @@ def _extract_arxiv_bibliography(
     arxiv_id = _arxiv_id(url)
     if not arxiv_id:
         return {}
-    title_match = re.search(r"(?mi)^#\s*Title:\s*(.+?)\s*$", content)
-    canonical_title = title_match.group(1).strip() if title_match else fallback_title
+    title_match = re.search(r"(?mi)^#[ \t]*Title:[ \t]*([^\n]+?)[ \t]*$", content)
+    if not title_match:
+        return {}
+    canonical_title = title_match.group(1).strip()
     year_prefix = int(arxiv_id[:2])
     full_year = 2000 + year_prefix if year_prefix <= 90 else 1900 + year_prefix
     publication_date = f"{full_year:04d}-{arxiv_id[2:4]}"
     official_url = f"https://arxiv.org/abs/{arxiv_id}"
-    return {
+    bibliography = {
         "canonical_title": canonical_title,
         "venue": "arXiv",
         "venue_type": "preprint",
@@ -361,6 +401,55 @@ def _extract_arxiv_bibliography(
         "official_url": official_url,
         "official_pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
     }
+    journal_ref = re.search(r'(?mi)^\|\s*Journal\s+reference:\s*\|\s*([^|\n]+)', content)
+    if journal_ref:
+        reference = journal_ref[1].strip()
+        venue = re.split(r',\s*pp\.\s*\d', reference, maxsplit=1, flags=re.I)[0].strip(' ,')
+        bibliography['venue'] = venue
+        bibliography['venue_type'] = ('conference' if re.search(r'(?i)\b(?:proceedings|conference|symposium|workshop)\b', venue)
+                                      else 'journal')
+        year = re.search(r'\b(?:19|20)\d{2}\b', reference)
+        if year:
+            bibliography['publication_date'] = year[0]
+        bibliography.pop('doi')
+        related = re.search(r'(?mi)^\|\s*Related DOI:\s*\|\s*([^|\n]+)', content)
+        doi = re.search(r'https?://doi\.org/(10\.\d{4,9}/[^\s<>]+)', related[1]) if related else None
+        if doi:
+            bibliography['doi'] = doi[1].rstrip('.,;')
+    return bibliography
+
+
+def _extract_iclr_bibliography(url: str, content: str) -> dict[str, object]:
+    match = re.fullmatch(
+        r'/paper_files/paper/(20\d{2})/hash/[0-9a-f]+-Abstract-Conference\.html',
+        urlparse(url).path,
+    )
+    if not match:
+        return {}
+    year = match[1]
+    venue = re.search(
+        rf'International Conference on Learning Representations\s+{year}\s+\(ICLR\s+{year}\)',
+        content, re.I,
+    )
+    heading = re.search(r'(?m)^#\s+(.+?)\s*$', content)
+    if not heading or not venue:
+        return {}
+    bibliography: dict[str, object] = {
+        'canonical_title': heading[1].strip(),
+        'venue': f'International Conference on Learning Representations {year} (ICLR {year})',
+        'venue_type': 'conference',
+        'publication_date': year,
+        'official_url': url,
+    }
+    author_line = next((line.strip() for line in content[heading.end():].splitlines() if line.strip()), '')
+    if author_line and not author_line.startswith('['):
+        authors = [name.strip() for name in author_line.split(',') if name.strip()]
+        if len(authors) >= 2:
+            bibliography['authors'] = authors
+    paper_link = re.search(r'\[Paper\]\((/paper_files/paper/[^)]+\.pdf)\)', content)
+    if paper_link:
+        bibliography['official_pdf_url'] = urljoin(url, paper_link[1])
+    return bibliography
 
 
 def _extract_acl_bibliography(
@@ -368,18 +457,18 @@ def _extract_acl_bibliography(
     url: str,
     content: str,
 ) -> dict[str, object]:
+    title_heading = _acl_title_heading(content, url)
+    if title_heading is None:
+        return {}
+    title, heading_end = title_heading
     bibliography: dict[str, object] = {
-        "canonical_title": _first_heading(content) or fallback_title,
+        "canonical_title": title,
         "venue_type": "conference",
         "official_url": url,
     }
-    heading = re.search(r"(?m)^#{1,6}\s+.+$", content)
-    author_region = content[heading.end() :] if heading else content
-    author_line = next(
-        (line for line in author_region.splitlines() if "/people/" in line),
-        "",
-    )
-    authors = re.findall(r"\[([^\]]+)\]\(/people/", author_line)
+    author_region = re.split(r'(?m)^#{1,6}\s+', content[heading_end:], maxsplit=1)[0]
+    authors = list(dict.fromkeys(re.findall(
+        r'\[([^\]]+)\]\((?:https://(?:www\.)?aclanthology\.org)?/people/[^)]*\)', author_region)))
     if not authors:
         simple_authors = _field(content, "Authors?")
         authors = (
@@ -412,16 +501,66 @@ def _extract_acl_bibliography(
             bibliography["publication_date"] = simple_date
     doi = _definition_field(content, "DOI") or _field(content, "DOI")
     if doi:
-        bibliography["doi"] = doi.removeprefix("https://doi.org/")
+        bibliography["doi"] = normalize_doi(doi)
     pdf_url = _definition_field(content, "PDF")
     if pdf_url and pdf_url.startswith("https://"):
         bibliography["official_pdf_url"] = pdf_url
     return bibliography
 
 
+def _acl_title_heading(content: str, url: str) -> tuple[str, int] | None:
+    """Prefer the heading linked to this paper; never guess from navigation."""
+    matched, plain = {}, {}
+    navigation = {'details', 'abstract', 'correct metadata for', 'export citation',
+                  'markdown informal', 'markdown', 'bibtex', 'acl', 'cite',
+                  'references', 'about', 'navigation', 'menu', 'home'}
+    for match in re.finditer(r'(?m)^(#{1,6})\s+(.+?)\s*$', content):
+        raw = match[2].strip()
+        link = re.fullmatch(r'\[([^\]]+)\]\(([^)]+)\)', raw)
+        title = link[1].strip() if link else raw
+        if not title or _normalize(title) in navigation:
+            continue
+        if link:
+            target = urljoin(url, link[2])
+            identifier = _acl_id(target)
+            if identifier:
+                if identifier == _acl_id(url):
+                    matched[_normalize(title)] = (title, match.end())
+                continue
+            # Keep support for stripped, relative PDF links in old extracts.
+            if urlparse(target).hostname != urlparse(url).hostname or not urlparse(target).path.endswith('.pdf'):
+                continue
+        if len(match[1]) <= 2:
+            plain[_normalize(title)] = (title, match.end())
+    candidates = matched or plain
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
+
+
 def _field(content: str, name: str) -> str | None:
-    match = re.search(rf"(?mi)^(?:{name}):\s*(.+?)\s*$", content)
+    match = re.search(rf"(?mi)^(?:{name}):[ \t]*([^\n]+?)[ \t]*$", content)
     return match.group(1).strip() if match else None
+
+
+def _observed_title(content: str, query_title: str) -> str | None:
+    """Select an observed article heading, excluding publisher navigation."""
+    ignored = {'nature', 'openreview', 'article', 'research article', 'menu', 'home',
+               'navigation', 'search', 'about', 'access options', 'sign in', 'login',
+               'skip to main content', 'details', 'download pdf'}
+    candidates = []
+    for match in re.finditer(r'(?m)^(#{1,2})[ \t]+([^\n]+)', content):
+        raw = match[2].strip()
+        link = re.fullmatch(r'\[([^\]]+)\]\([^)]*\)', raw)
+        title = link[1] if link else raw
+        normalized = _normalize(title)
+        if normalized in {'abstract', 'references', 'bibliography'}:
+            break
+        if normalized and normalized not in ignored:
+            candidates.append(title)
+    matching = list(dict.fromkeys(t for t in candidates if _normalize(t) == _normalize(query_title)))
+    if len(matching) == 1:
+        return matching[0]
+    unique = list(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else None
 
 
 def _first_heading(content: str) -> str | None:
@@ -452,6 +591,8 @@ def _source_bonus(domain: str) -> float:
         return 0.24
     if domain == "openreview.net":
         return 0.18
+    if domain == "proceedings.iclr.cc":
+        return 0.26
     if domain.endswith(".acm.org") or domain.endswith(".ieee.org"):
         return 0.16
     if domain == "arxiv.org":
@@ -475,17 +616,32 @@ def _merge_search_payloads(
 def _arxiv_id(url: str) -> str | None:
     if urlparse(url).netloc.casefold().removeprefix("www.") != "arxiv.org":
         return None
-    match = re.search(r"/(?:abs|html|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?", urlparse(url).path)
+    match = re.fullmatch(r"/(?:abs|html|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?", urlparse(url).path)
     return match.group(1) if match else None
+
+
+def _acl_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.netloc.casefold().removeprefix('www.') != 'aclanthology.org':
+        return None
+    path = parsed.path.strip('/')
+    # Modern mirror PDFs and historical directory layouts share the paper ID
+    # in their filename. Do not turn arbitrary ACL site paths into paper IDs.
+    if '/' in path and not path.endswith('.pdf'):
+        return None
+    identifier = path.rsplit('/', 1)[-1].removesuffix('.pdf')
+    if re.fullmatch(r'(?:\d{4}\.[a-z][a-z0-9-]*\.\d+|[A-Z]\d{2}-\d{4})', identifier):
+        return identifier
+    return None
 
 
 def _candidate_work_key(candidate: _Candidate) -> str:
     arxiv_id = _arxiv_id(candidate.url)
     if arxiv_id:
         return f"arxiv:{arxiv_id}"
-    if candidate.domain == "aclanthology.org":
-        identifier = urlparse(candidate.url).path.strip("/").removesuffix(".pdf")
-        return f"acl:{identifier}"
+    acl_id = _acl_id(candidate.url)
+    if acl_id:
+        return f"acl:{acl_id}"
     return candidate.url.rstrip("/")
 
 
@@ -502,6 +658,12 @@ def _candidate_sort_key(candidate: _Candidate) -> tuple[float, int, str]:
 def _normalize(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return " ".join(re.findall(r"[\w]+", normalized))
+
+
+def normalize_doi(value: str) -> str:
+    value = html.unescape(value).strip().strip('<>')
+    return re.sub(r'^(?:https?://(?:dx\.)?doi\.org/|doi\s*:\s*)', '', value,
+                  flags=re.I).rstrip('.,;')
 
 
 def _token_overlap(left: str, right: str) -> float:

@@ -86,6 +86,7 @@ document.addEventListener("DOMContentLoaded", () => {
   toggle.addEventListener("click", () => {
     preserveReadingPosition(() => {
     enabled = !enabled;
+    try { localStorage.setItem('paper-reader-parallel', String(enabled)); } catch {}
     toggle.setAttribute("aria-pressed", String(enabled));
     const label = enabled ? "关闭中英对照" : "中英对照";
     toggle.setAttribute("aria-label", label);
@@ -105,4 +106,5 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   refresh.addEventListener("click", loadSaved);
+  try { if (localStorage.getItem('paper-reader-parallel') === 'true') toggle.click(); } catch {}
 });

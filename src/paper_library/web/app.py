@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from paper_library.metadata.citations import build_citations
+
 import atexit
 import hashlib
 from functools import partial
 from paper_library.ingest.service import ingest_pdf
 from pathlib import Path
+from urllib.parse import unquote
 
 from flask import Flask, request, abort, current_app, g, jsonify, redirect, render_template, send_file, url_for
 from markupsafe import Markup
@@ -32,6 +35,8 @@ from paper_library.web.markdown import RenderedMarkdown, render_translatable_mar
 from paper_library.structure.document import load_structure
 from paper_library.structure.service import StructureService
 from paper_library.reading.service import load_guide
+from paper_library.web.presentation import catalog_view, reading_navigation
+from paper_library.web.images import image_dimensions
 
 DEFAULT_LIBRARY_ID = "mechanism-interpretability"
 
@@ -50,21 +55,28 @@ def create_app(
         SEND_FILE_MAX_AGE_DEFAULT=0,
         MAX_CONTENT_LENGTH=settings.upload_max_bytes + 1024 * 1024,
     )
+    from paper_library.jobs.security import _is_loopback
+    if _is_loopback(settings.host):
+        app.config['TRUSTED_HOSTS']=['localhost','127.0.0.1','[::1]',settings.host]
     from paper_library.ingest.service import _lock
-    for root in settings.paths.libraries.glob('*'):
-        if root.is_dir() and (root / '.transactions').exists():
-            try:
-                with _lock(root):pass
-            except (ValueError,OSError):
-                app.logger.exception('Publication recovery pending for %s',root.name)
+    from paper_library.storage.locking import gate
+    with gate(settings.paths.root):
+        for root in settings.paths.libraries.glob('*'):
+            if root.is_dir() and not root.is_symlink() and (root / '.transactions').exists():
+                try:
+                    with _lock(root):pass
+                except (ValueError,OSError):
+                    app.logger.exception('Publication recovery pending for %s',root.name)
     libraries = LibraryRepository(settings.paths.libraries)
     app.extensions["library_repository"] = libraries
-    translation = TranslationConfig.from_settings(settings.translation(required=False))
-    translation_service = TranslationService(
-        translation, settings.paths.cache, max_concurrency=translation.concurrency
-    )
+    from paper_library.preferences import RuntimePreferences, ReadingTranslations
+    preferences = RuntimePreferences(settings)
+    app.extensions['runtime_preferences'] = preferences
+    translation_service = ReadingTranslations(preferences)
     app.extensions["translation_service"] = translation_service
     jobs = JobRepository(settings.jobs_database,max_pending=int(settings.values.get("PAPER_JOB_MAX_PENDING","32")))
+    jobs.reconcile_metadata_notices(libraries)
+    jobs.reconcile_quality_notices()
     uploads = UploadStager(
         settings.uploads_directory,
         max_bytes=settings.upload_max_bytes,
@@ -76,14 +88,23 @@ def create_app(
         settings.host,
         settings.remote_management_enabled,
     )
-    runner = job_runner or JobRunner(
-        jobs,
-        lambda: JobWorkflow(jobs, uploads, libraries, translation_service,
+    def workflow_factory():
+        snapshot = preferences.snapshot()
+        config = TranslationConfig.from_settings(snapshot.translation(required=False))
+        translator = TranslationService(config, snapshot.paths.cache, max_concurrency=config.concurrency)
+        from paper_library.ingest.service import refresh_metadata
+        workflow = JobWorkflow(jobs, uploads, libraries, translator,
                             project_root=settings.paths.root,
-                            ingest=partial(ingest_pdf, repair_settings=settings),
-                            guide_generator=lambda path, **kwargs: GuideService(settings).generate(path, **kwargs),
-                            structure_generator=lambda path, **kwargs: StructureService(settings).generate(path, **kwargs),
-                            paragraph_repairer=partial(repair_file, settings=settings)),
+                            ingest=partial(ingest_pdf, repair_settings=snapshot),
+                            guide_generator=lambda path, **kwargs: GuideService(snapshot).generate(path, **kwargs),
+                            structure_generator=lambda path, **kwargs: StructureService(snapshot).generate(path, **kwargs),
+                            paragraph_repairer=partial(repair_file, settings=snapshot),
+                            metadata_refresher=partial(refresh_metadata, settings=snapshot))
+        workflow.configuration = {'revision': snapshot.revision, 'model': config.model}
+        return workflow
+
+    runner = job_runner or JobRunner(
+        jobs, workflow_factory,
         uploads_directory=settings.uploads_directory,
         max_recoveries=int(settings.values.get("PAPER_JOB_MAX_RECOVERIES", "3")),
     )
@@ -93,6 +114,8 @@ def create_app(
         upload_stager=uploads,
         management_guard=guard,
     )
+    from paper_library.operations.settings_routes import settings_blueprint
+    app.register_blueprint(settings_blueprint(preferences, guard, libraries))
 
     @app.url_value_preprocessor
     def select_library(_endpoint, values):
@@ -100,7 +123,7 @@ def create_app(
 
     @app.url_defaults
     def library_url_defaults(endpoint, values):
-        if endpoint in {"library_index", "paper_detail", "paper_pdf", "paper_asset", "paper_translation"} and getattr(g, "library_id", None):
+        if endpoint in {"library_index", "paper_detail", "paper_pdf", "paper_asset", "paper_translation", "paper_guide_section"} and getattr(g, "library_id", None):
             values.setdefault("library_id", g.library_id)
 
     @app.context_processor
@@ -108,7 +131,7 @@ def create_app(
         name = "论文库"
         if getattr(g, "library_id", None):
             try:
-                name = _repository().discover()[g.library_id].config.name
+                name = _repository().load(g.library_id).descriptor.config.name
             except (KeyError, LibraryError):
                 pass
         return {"library_name": name, "multi_library": True}
@@ -172,25 +195,16 @@ def _register_routes(app: Flask) -> None:
 
     @app.get("/health/ready")
     def health_ready():
-        try:
-            descriptors = _repository().discover()
-            for library_id in descriptors:
-                _repository().load(library_id)
-        except LibraryError as error:
-            return jsonify(status="error", error=str(error)), 503
-        import sqlite3
-        try:
-            current_app.extensions['job_repository'].state_counts()
-            with current_app.extensions['personal_store'].connect() as database:
-                database.execute('SELECT 1 FROM notes LIMIT 1')
-        except sqlite3.Error:
-            return jsonify(status='error',error='运行数据库不可用'),503
-        return jsonify(status="ok", libraries=len(descriptors))
+        from paper_library.operations.health import reading_status
+        report = reading_status(current_app.config['PAPER_LIBRARY_SETTINGS'], repository=_repository())
+        if not report['reading_ready']:
+            return jsonify(status='error', checks=report['checks']), 503
+        return jsonify(status='ok', libraries=len(_repository().scan()[0]))
 
     @app.get("/")
     def home():
         try:
-            descriptors = _repository().discover()
+            descriptors, issues = _repository().scan()
         except LibraryError:
             current_app.logger.exception("Unable to discover paper libraries")
             abort(503)
@@ -200,11 +214,13 @@ def _register_routes(app: Flask) -> None:
                 snapshot = _repository().load(library_id)
                 count = len(snapshot.papers)
                 warning = "；".join(snapshot.warnings)
+                if any(snapshot.descriptor.root.glob('.transactions/*/journal.json')):
+                    warning = '存在未恢复的发布事务，请在运行状态页检查'
             except LibraryError:
                 count = None
                 warning = "论文目录暂时不可用"
             libraries.append(dict(id=library_id, name=descriptor.config.name, count=count, warning=warning))
-        return render_template("libraries.html", libraries=libraries)
+        return render_template("libraries.html", libraries=libraries, discovery_issues=issues)
 
     @app.get("/paper/<paper_id>")
     def legacy_paper_detail(paper_id: str):
@@ -225,7 +241,7 @@ def _register_routes(app: Flask) -> None:
     @app.get("/library/<library_id>/")
     def library_index():
         snapshot = _load_snapshot()
-        return render_template("library.html", groups=snapshot.grouped(), paper_count=len(snapshot.papers), warnings=snapshot.warnings)
+        return render_template("library.html", **catalog_view(snapshot, request.args), warnings=snapshot.warnings)
 
     @app.get("/library/<library_id>/paper/<paper_id>")
     def paper_detail(paper_id: str):
@@ -244,6 +260,7 @@ def _register_routes(app: Flask) -> None:
         if not pdf_available:
             warnings.append("PDF 文件不存在。")
         document_version = ""
+        navigation = dict(groups=[], main=None, combined=False)
         rendered: RenderedMarkdown | None = None
         if not paths.markdown.is_file():
             warnings.append("Markdown 文件不存在。")
@@ -252,10 +269,19 @@ def _register_routes(app: Flask) -> None:
                 source = paths.markdown.read_text(encoding="utf-8")
                 asset_prefix = f"{url_for('paper_detail', library_id=library_id, paper_id=paper.id)}/asset"
                 structure = load_structure(paths.root, source)
-                raw = (render_markdown(source, asset_prefix, translation_slots=True, annotations=structure['annotations'])
-                       if structure else render_translatable_markdown(source, asset_prefix))
+                def image_size(url):
+                    if not url.startswith(asset_prefix + '/'):
+                        return None
+                    try:
+                        asset = resolve_paper_asset(root, paper, unquote(url[len(asset_prefix) + 1:]))
+                        return image_dimensions(asset)
+                    except (LibraryError, ValueError, OSError):
+                        return None
+                raw = render_markdown(source, asset_prefix, translation_slots=True,
+                                      annotations=structure['annotations'] if structure else None, image_size=image_size)
                 document_version = hashlib.sha256(source.encode()).hexdigest()
-                rendered = RenderedMarkdown(Markup(raw.html), raw.headings, raw.warnings, raw.segments)
+                rendered = RenderedMarkdown(Markup(raw.html), raw.headings, raw.warnings, raw.segments, raw.physical_headings)
+                navigation = reading_navigation(source, raw.headings, raw.physical_headings)
                 warnings.extend(raw.warnings)
             except (OSError, UnicodeError):
                 warnings.append("Markdown 文件无法读取。")
@@ -263,7 +289,30 @@ def _register_routes(app: Flask) -> None:
                 current_app.logger.exception("Markdown rendering failed for %s", paper.id)
                 warnings.append("Markdown 渲染失败，请查看终端日志。")
         guide = load_guide(paths.root, document_version) if rendered else None
-        return render_template("paper.html", paper=paper, metadata=metadata, rendered=rendered, document_version=document_version, pdf_available=pdf_available, warnings=tuple(warnings), guide=guide)
+        return render_template("paper.html", paper=paper, metadata=metadata, citations=build_citations(paper, metadata), rendered=rendered, document_version=document_version, pdf_available=pdf_available, warnings=tuple(warnings), guide=guide, navigation=navigation)
+
+    @app.get("/library/<library_id>/paper/<paper_id>/guide")
+    def paper_guide_section(paper_id: str):
+        snapshot = _load_snapshot()
+        paper = snapshot.find(paper_id)
+        if paper is None or paper.id != paper_id:
+            abort(404)
+        paths = PaperPaths.for_id(snapshot.descriptor.root, paper.id)
+        try:
+            version = hashlib.sha256(paths.markdown.read_bytes()).hexdigest()
+        except OSError:
+            abort(404)
+        if request.args.get('version') != version:
+            return jsonify(error='论文正文已更新，请刷新页面。'), 409
+        guide = load_guide(paths.root, version)
+        if not guide or guide.get('stale'):
+            return jsonify(error='章节导读暂不可用，请在导入任务中检查生成结果。'), 409
+        section = next((row for row in guide['sections'] if row['id'] == request.args.get('section')), None)
+        if section is None:
+            abort(404)
+        response = jsonify(document_version=version, html=render_template('guide-section.html', section=section))
+        response.headers['Cache-Control'] = 'no-store'
+        return response
 
     @app.get("/library/<library_id>/paper/<paper_id>/pdf")
     def paper_pdf(paper_id: str):
@@ -313,7 +362,10 @@ def _load_snapshot() -> LibrarySnapshot:
     if not getattr(g, "library_id", None):
         abort(404)
     try:
-        return _repository().load(g.library_id)
+        snapshot = _repository().load(g.library_id)
+        if any(snapshot.descriptor.root.glob('.transactions/*/journal.json')):
+            abort(503)
+        return snapshot
     except LibraryError:
         current_app.logger.exception("Unable to load paper library %s", g.library_id)
         abort(503)

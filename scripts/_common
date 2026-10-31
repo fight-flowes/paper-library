@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+source "$(cd "$PROJECT_ROOT/../.." && pwd -P)/_deps/runtime.sh"
+
 run_module() {
   local module="$1"
   local conda_env="${PAPER_LIBRARY_CONDA_ENV:-}"

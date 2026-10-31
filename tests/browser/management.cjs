@@ -44,10 +44,36 @@ async function waitForServer() {
       return [file.getBoundingClientRect().height, select.getBoundingClientRect().height];
     });
     assert(Math.abs(controlHeights[0] - controlHeights[1]) < 2);
+    for (const label of ['新增论文库', '新增主题']) {
+      const button = page.getByRole('button', {name:label, exact:true});
+      assert.equal(await button.locator('svg').count(), 1);
+      assert.equal((await button.innerText()).trim(), '');
+    }
+    await page.getByRole('button', {name:'新增论文库', exact:true}).click();
+    await page.getByRole('button', {name:'创建并选中', exact:true}).click();
+    assert((await page.locator('#library-error').innerText()).includes('请输入'));
+    await page.getByLabel('新论文库名称').fill('强化学习');
+    await page.getByLabel('新论文库名称').press('Enter');
+    await page.waitForFunction(() => document.querySelector('#import-library').selectedOptions[0]?.textContent === '强化学习');
+    const newLibrary = await page.locator('#import-library').inputValue();
+    assert.equal(await page.locator('#import-subject option').count(), 1);
+    await page.getByRole('button', {name:'新增主题', exact:true}).click();
+    await page.getByLabel('新主题名称').fill('策略优化');
+    await page.getByRole('button', {name:'保存并选中', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('#import-subject').value === '策略优化');
+    await page.reload();
+    await page.getByLabel('论文库', {exact:true}).selectOption(newLibrary);
+    assert.equal(await page.locator('#import-subject option').last().textContent(), '策略优化');
+    await page.getByRole('button', {name:'新增论文库', exact:true}).click();
+    await page.getByLabel('新论文库名称').fill('强化学习');
+    await page.getByRole('button', {name:'创建并选中', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('#library-error').textContent.includes('同名'));
+    await page.getByLabel('新论文库名称').press('Escape');
+    assert.equal(await page.locator('#new-library').isVisible(), false);
     await page.getByLabel('PDF 文件').setInputFiles({
       name: 'browser-paper.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-browser'),
     });
-    await page.getByLabel('论文库').selectOption('whitespace');
+    await page.getByLabel('论文库', {exact:true}).selectOption('whitespace');
     await page.getByRole('button', { name: '新增主题', exact: true }).click();
     await page.getByLabel('新主题名称').fill('related-work');
     await page.getByRole('button', { name: '保存并选中' }).click();
@@ -76,21 +102,60 @@ async function waitForServer() {
     assert(!requests.some(url => /api[_-]?key|authorization/i.test(url)));
     assert.deepEqual(errors, []);
     await page.getByRole('link', { name: '打开论文' }).click();
-    assert((await page.locator('body').innerText()).includes('English paragraph'));
+    await page.waitForURL('**/library/*/paper/*');
+    await page.locator('.structure-abstract').waitFor();
+    assert((await page.locator('body').innerText()).includes('English paragraph'), `${page.url()}\n${await page.locator('body').innerText()}`);
     assert.equal(await page.locator('.structure-abstract').count(), 1);
     assert.equal(await page.locator('.structure-abstract').evaluate(e => getComputedStyle(e).textAlign), 'left');
+    // Exercise both real clipboard output and the denied-permission fallback.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.locator('.reading-more summary').click();
+    await page.getByRole('button', {name:'复制普通引用', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('#citation-status').textContent === '已复制');
+    const plainCitation = await page.evaluate(() => navigator.clipboard.readText());
+    assert(plainCitation.includes('Browser paper'));
+    await page.getByRole('button', {name:'复制 BibTeX', exact:true}).click();
+    await page.waitForFunction(async () => (await navigator.clipboard.readText()).startsWith('@'));
+    assert((await page.evaluate(() => navigator.clipboard.readText())).includes('title = {{Browser paper}}'));
+    await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
+    await page.getByRole('button', {name:'复制普通引用', exact:true}).click();
+    await page.getByRole('dialog').waitFor();
+    assert.equal(await page.getByLabel('引用文本').inputValue(), plainCitation);
+    await page.getByRole('button', {name:'关闭复制窗口'}).click();
+    await page.locator('.reading-more summary').click();
     // Personal annotations stay separate from generated source content.
     await page.setViewportSize({width:1280,height:900});
     await page.locator('#source-3').evaluate(el => {
       const range=document.createRange();range.selectNodeContents(el);
       const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
     });
+    await page.getByRole('button',{name:'高亮选文',exact:true}).click();
     await page.getByRole('button',{name:'标注',exact:true}).click();
-    await page.getByLabel('新增笔记').fill('我的阅读理解 <script>unsafe()</script>');
-    await page.getByRole('button',{name:'保存笔记',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#notes-status').textContent==='已保存');
+    await page.waitForFunction(()=>document.querySelectorAll('#notes-list article').length===1);
+    assert.equal(await page.locator('#highlight-status').textContent(),'');
+    assert.equal(await page.locator('#notes-status').textContent(),'');
+    assert.equal(await page.locator('#notes-list article small').count(),0);
+    assert(await page.locator('#notes-list article').evaluate(item => {
+      const add=item.querySelector('summary').getBoundingClientRect();
+      const remove=item.querySelector('.note-card-actions > button').getBoundingClientRect();
+      return Math.abs(add.top-remove.top)<3;
+    }));
+    assert.equal(await page.locator('#note-text').count(),0);
+    assert.equal(await page.locator('#notes-panel #add-highlight').count(),0);
+    assert.equal(await page.locator('#selected-quote').count(),0);
+    assert.equal(await page.getByLabel('编辑备注').isVisible(),false);
+    await page.getByText('添加备注',{exact:true}).click();
+    await page.getByLabel('编辑备注').fill('我的阅读理解 <script>unsafe()</script>');
+    await page.getByRole('button',{name:'保存备注',exact:true}).click();
+    await page.getByText('编辑备注',{exact:true}).waitFor();
     assert.equal(await page.locator('#notes-list article').count(),1);
     assert.equal(await page.locator('#notes-list script').count(),0);
+    await page.getByText('编辑备注',{exact:true}).click();
+    await page.getByLabel('编辑备注').fill('');
+    await page.getByRole('button',{name:'保存备注',exact:true}).click();
+    await page.getByText('添加备注',{exact:true}).waitFor();
+    assert.equal(await page.locator('#notes-list article').count(),1);
+    assert(await page.evaluate(()=>CSS.highlights.get('reader-notes').size===1));
     await page.getByRole('button',{name:'目录',exact:true}).click();
     await page.mouse.wheel(0,1800);
     await page.waitForTimeout(1600);
@@ -111,7 +176,8 @@ async function waitForServer() {
     await second.waitForFunction(()=>window.scrollY>500);
     await second.close();
     await page.goto(base+'/reading');
-    assert((await page.locator('body').innerText()).includes('我的阅读理解'));
+    assert((await page.locator('body').innerText()).includes('English paragraph'));
+    assert(!(await page.locator('body').innerText()).includes('我的阅读理解'));
     await page.goto(base+'/search?q=English');
     assert((await page.locator('.search-results').innerText()).includes('English paragraph'));
     // A lost status connection is visible and recovery still resumes polling.
@@ -129,15 +195,17 @@ async function waitForServer() {
     const warningPayload = await (await fetch(base + apiPath)).json();
     warningPayload.state = 'completed_with_warnings';
     warningPayload.outcomes = {
-      metadata: {status: 'warning', message: '论文信息未能确认'},
+      metadata: {status: 'warning', message: '找到候选，但证据不足', reason: 'ambiguous', candidates: [{title: 'Official candidate', url: 'https://arxiv.org/abs/2510.10271', domain: 'arxiv.org'}, {title: 'Unsafe', url: 'javascript:alert(1)', domain: 'arxiv.org'}]},
       translation: {status: 'warning', message: '阅读提示 2 段'},
       guide: {status: 'warning', message: '导读未完成，可重试'}
     };
     await page.route('**/api/jobs/*', route => route.fulfill({json: warningPayload}));
     await page.goto(jobUrl);
-    await page.waitForFunction(() => document.querySelector('[data-job-state]').textContent.includes('待处理项'));
+    await page.waitForFunction(() => document.querySelector('[data-job-state]').textContent.includes('需核对'));
     assert.equal(await page.locator('[data-job-outcomes] [data-result="warning"]').count(), 3);
     assert((await page.locator('[data-job-outcomes]').textContent()).includes('导读未完成'));
+    assert.equal(await page.locator('[data-job-outcomes] a[href="https://arxiv.org/abs/2510.10271"]').count(), 1);
+    assert.equal(await page.locator('[data-job-outcomes] a[href^="javascript:"]').count(), 0);
     assert(await page.getByRole('button', {name: '重试', exact: true}).isVisible());
     await page.route(jobUrl, async route => {
       const response = await route.fetch();

@@ -72,6 +72,17 @@ def test_management_settings_have_safe_defaults(tmp_path: Path) -> None:
     assert settings.uploads_directory == tmp_path.resolve() / ".paper-library-dev/uploads"
 
 
+def test_explicit_cli_profile_can_override_frontend_default_model(tmp_path):
+    settings = Settings.load(ProjectPaths.from_root(tmp_path), {
+        'PAPER_TRANSLATION_MODEL': 'frontend', 'PAPER_TRANSLATION_BASE_URL': 'http://frontend/v1',
+        'LLM_OTHER_MODEL': 'other', 'LLM_OTHER_BASE_URL': 'http://other/v1',
+    })
+    assert settings.translation().model == 'frontend'
+    assert settings.translation().profile == 'frontend'
+    assert settings.translation('other').model == 'other'
+    assert settings.translation('other').base_url == 'http://other/v1'
+
+
 def test_upload_limit_and_remote_management_are_configurable(tmp_path: Path) -> None:
     settings = Settings.load(
         ProjectPaths.from_root(tmp_path),

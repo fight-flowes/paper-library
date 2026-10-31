@@ -271,10 +271,31 @@ def test_changed_structure_marks_guide_stale_even_when_source_is_unchanged(tmp_p
     from paper_library.structure.document import build_blocks,source_hash
     source='# Paper\n\nParagraph content long enough for an explanation.\n'
     (tmp_path/'article.md').write_text(source)
-    guide={'schema_version':1,'document_version':source_hash(source),'overview':[],'sections':[],
+    point={'kind':'原文结论','text':'说明研究背景。','evidence':[
+        {'id':'source-3','quote':'Paragraph content long enough for an explanation.'}]}
+    section=build_document(source)['sections'][0]
+    guide={'schema_version':1,'document_version':source_hash(source),'overview':[point],
+           'sections':[{**section,'parts':[{'role':'背景','points':[point],'details':[],'skip_reason':''}]}],
            'structure_version':hashlib.sha256(json.dumps(None,sort_keys=True).encode()).hexdigest()}
     (tmp_path/'reading-guide.json').write_text(json.dumps(guide))
     assert not load_guide(tmp_path,source_hash(source))['stale']
     roles=[{'id':b['id'],'role':'body'} for b in build_blocks(source)]
     (tmp_path/'document-structure.json').write_text(json.dumps({'version':1,'source_sha256':source_hash(source),'annotations':roles}))
     assert load_guide(tmp_path,source_hash(source))['stale']
+
+
+def test_overview_uses_main_text_without_appendix_examples():
+    from paper_library.reading.service import _overview_source_sections
+
+    sections = [
+        {'title': 'Abstract', 'parts': [{'points': [{'text': 'abstract'}]}]},
+        {'title': '1 Introduction', 'parts': [{'points': [{'text': 'introduction'}]}]},
+        {'title': '6 Conclusion', 'parts': [{'points': [{'text': 'conclusion'}]}]},
+        {'title': 'References', 'parts': [{'points': [{'text': 'citations'}]}]},
+        {'title': 'A.1 Baselines', 'parts': [{'points': [{'text': 'appendix'}]}]},
+        {'title': 'Example', 'parts': [{'points': [{'text': 'example'}]}]},
+    ]
+    assert [item['title'] for item in _overview_source_sections(sections)] == [
+        'Abstract', '1 Introduction', '6 Conclusion'
+    ]
+    assert _overview_source_sections(sections[:3]) == sections[:3]

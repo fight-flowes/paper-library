@@ -30,8 +30,9 @@ def register_translation_routes(app, load_snapshot, project_root, library_id):
             rendered = render_translatable_markdown(source, prefix)
             identity = f"{library_id()}/{paper.id}"
             service = current_app.extensions['translation_service']
-            saved = service.cached_many(identity, version, rendered.segments)
-            sources = {key: service.config.model for key in saved}
+            records = service.cached_many_records(identity, version, rendered.segments)
+            saved = {key: record.text for key, record in records.items()}
+            sources = {key: record.model for key, record in records.items()}
             segments = [
                 {'id': segment.id,
                  'model': sources.get(segment.id),

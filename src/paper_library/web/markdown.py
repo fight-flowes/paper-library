@@ -35,6 +35,7 @@ class Heading:
     level: int
     id: str
     text: str
+    source_line: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +44,10 @@ class RenderedMarkdown:
     headings: tuple[Heading, ...]
     warnings: tuple[str, ...]
     segments: tuple[TranslationSegment, ...] = ()
+    physical_headings: tuple[Heading, ...] = ()
 
 
-def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bool = False, annotations=None) -> RenderedMarkdown:
+def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bool = False, annotations=None, image_size=None) -> RenderedMarkdown:
     """Render one Markdown string without filesystem or network access."""
 
     failed_formula_count = 0
@@ -74,6 +76,7 @@ def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bo
     _sanitize_raw_html(tokens)
     _rewrite_images(tokens, asset_url_prefix)
     headings = _assign_heading_ids(tokens)
+    physical_headings = headings
     # Source-line anchors do not alter translation IDs or token positions.
     for token in tokens:
         if token.level == 0 and token.map:
@@ -126,13 +129,16 @@ def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bo
                     else:
                         token.attrSet('role', 'heading')
                         token.attrSet('aria-level', str(row['level']))
-            if token.type == 'heading_open' or role == 'heading':
+            if row.get('toc') is False and token.type == 'heading_open' and role != 'title':
+                token.tag = 'p'
+                tokens[index + 2].tag = 'p'
+            if row.get('toc', token.type == 'heading_open' or role == 'heading'):
                 level = row['level'] if role == 'heading' else int(token.tag[1:])
                 anchor = token.attrGet('id')
                 text = (original_headings[anchor].text if anchor in original_headings else
                         ''.join(child.content for child in tokens[index + 1].children or []
                                 if child.type in {'text', 'code_inline', 'math_inline'}))
-                adjusted.append(Heading(level, anchor, text))
+                adjusted.append(Heading(level, anchor, text, token.map[0] + 1))
         headings = tuple(adjusted)
     for index in range(len(tokens) - 1, -1, -1):
         token = tokens[index]
@@ -141,6 +147,16 @@ def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bo
             anchor_token.content = f'<span id="source-{token.map[0] + 1}"></span>'
             token.attrs.pop('id', None)
             tokens.insert(index, anchor_token)
+    # Display attributes must not change protected translation fragments/cache keys.
+    for token in _walk_tokens(tokens):
+        if token.type == 'image':
+            token.attrSet('loading', 'lazy')
+            token.attrSet('decoding', 'async')
+            if image_size:
+                dimensions = image_size(token.attrGet('src') or '')
+                if dimensions:
+                    token.attrSet('width', str(dimensions[0]))
+                    token.attrSet('height', str(dimensions[1]))
     rendered_html = parser.renderer.render(tokens, parser.options, {})
 
     warnings: tuple[str, ...] = ()
@@ -148,7 +164,7 @@ def render_markdown(source: str, asset_url_prefix: str, *, translation_slots: bo
         warnings = (
             f"有 {failed_formula_count} 个公式无法转换，已显示 LaTeX 原文。",
         )
-    return RenderedMarkdown(rendered_html, headings, warnings, segments)
+    return RenderedMarkdown(rendered_html, headings, warnings, segments, physical_headings)
 
 
 def _walk_tokens(tokens: Iterable[Token]) -> Iterable[Token]:
@@ -240,7 +256,7 @@ def _assign_heading_ids(tokens: list[Token]) -> tuple[Heading, ...]:
         count = slug_counts[base_slug]
         heading_id = base_slug if count == 1 else f"{base_slug}-{count}"
         token.attrSet("id", heading_id)
-        headings.append(Heading(int(token.tag[1:]), heading_id, text))
+        headings.append(Heading(int(token.tag[1:]), heading_id, text, token.map[0] + 1 if token.map else 0))
     return tuple(headings)
 
 

@@ -57,6 +57,10 @@ def validate_annotations(rows, blocks):
         if role in {'heading', 'title'} and len(block['text'].strip()) > 240:
             role = 'unknown'
         found[key] = {'id':key, 'role':role, **({'level':level} if role == 'heading' else {})}
+        if 'toc' in row and not block['locked']:
+            if type(row['toc']) is not bool or role in {'unknown', 'preserve'} or row['toc'] != (role == 'heading'):
+                raise ValueError('目录成员标注与文本角色不一致')
+            found[key]['toc'] = row['toc']
     return [found[b['id']] for b in blocks]
 
 

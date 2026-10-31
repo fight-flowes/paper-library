@@ -2,11 +2,13 @@
   "name": "paper-library-browser-tests",
   "private": true,
   "scripts": {
+    "test:settings": "node tests/browser/settings.cjs",
     "test:browser": "node tests/browser/translation.cjs",
     "test:management": "node tests/browser/management.cjs",
     "test:layout": "node tests/browser/layout.cjs",
     "test:workspace": "node tests/browser/workspace.cjs",
     "test:guide": "node tests/browser/guide.cjs",
+    "test:frontend": "node tests/browser/frontend-tools.cjs",
     "test": "node tests/browser/management.cjs"
   },
   "devDependencies": {

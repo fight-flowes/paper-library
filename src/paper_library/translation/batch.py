@@ -48,7 +48,7 @@ def load_tasks(repository: LibraryRepository, library_id: str, paper_id: str | N
 
 def run_batch(tasks, service: TranslationService, *, concurrency: int = 8, retries: int = 2,
               dry_run: bool = False, stop_event: Event | None = None, progress=print,
-              on_update=None, retry_warnings: bool = False) -> dict:
+              on_update=None, retry_warnings: bool = False, retry_integrity: bool = False) -> dict:
     if not 1 <= concurrency <= 32:
         raise ValueError('并发数必须在 1 到 32 之间')
     if not 0 <= retries <= 5:
@@ -71,13 +71,15 @@ def run_batch(tasks, service: TranslationService, *, concurrency: int = 8, retri
     for task in tasks:
         saved = service.cached_record(task.identity, task.version, task.segment)
         task_key = (task.identity, task.segment.id)
-        if saved is not None and retry_warnings and saved.warnings:
+        if saved is not None and ((retry_warnings and saved.warnings)
+                                  or (retry_integrity and task.segment.integrity_warnings(saved.text))):
             pending.append(task)
             warning_retries.add(task_key)
         elif saved is not None:
             report['cached'] += 1
             report['results'].append(record(task, 'cached'))
             report['results'][-1]['warnings'] = list(saved.warnings)
+            report['results'][-1]['integrity_warnings'] = task.segment.integrity_warnings(saved.text)
         else:
             pending.append(task)
     progress(f"共 {len(tasks)} 段，已保存 {report['cached']} 段，待处理 {len(pending)} 段；并发 {concurrency}")
@@ -102,6 +104,7 @@ def run_batch(tasks, service: TranslationService, *, concurrency: int = 8, retri
                                                force=is_warning_retry)
                 result = record(task, 'translated', attempt)
                 result['warnings'] = task.segment.warnings(translated)
+                result['integrity_warnings'] = task.segment.integrity_warnings(translated)
                 result['retried_warning'] = is_warning_retry
                 return result
             except TranslationError as error:

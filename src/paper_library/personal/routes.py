@@ -11,7 +11,7 @@ from flask import Blueprint,abort,jsonify,render_template,request,Response,url_f
 from paper_library.catalog import PaperPaths,LibraryError
 from paper_library.web.markdown import render_translatable_markdown
 from paper_library.translation.service import TranslationError
-from .text import TextMap,relocate
+from .text import TextMap,matching_positions,relocate
 from .store import ProgressConflict
 
 
@@ -56,24 +56,32 @@ def personal_blueprint(libraries,store,index,translations,guard):
     def search():
         query=request.args.get('q','')[:200];errors=[];rows=[];total_papers=total_hits=0
         page=max(1,request.args.get('page',1,type=int) or 1)
+        library_filter=request.args.get('library','')[:120]
+        origin_filter=request.args.get('origin','')
+        if origin_filter not in {'metadata','original','translation'}:origin_filter=''
+        try: library_names={key:descriptor.config.name for key,descriptor in libraries.scan()[0].items()}
+        except LibraryError: library_names={}
         if query.strip():
             try:
                 errors=list(index.errors) if index.background else index.sync(libraries,translations)
                 if index.background and not index.ready:errors.append('索引正在更新，请稍后刷新')
-                rows,total_papers,total_hits=index.page(query,page=page)
+                rows,total_papers,total_hits=index.page(query,page=page,library=library_filter,origin=origin_filter)
             except (LibraryError,TranslationError,OSError,sqlite3.Error):errors=['检索索引暂不可用，已有论文仍可阅读']
         groups={}
         for row in rows:
             key=(row['library'],row['paper'])
             groups.setdefault(key,dict(library=row['library'],paper=row['paper'],title=row['title'],hits=[]))['hits'].append(row)
-        return render_template('search.html',query=query,results=rows,groups=list(groups.values()),index_errors=errors,page=page,total_papers=total_papers,total_hits=total_hits,has_next=page*20<total_papers)
+        return render_template('search.html',query=query,results=rows,groups=list(groups.values()),index_errors=errors,page=page,total_papers=total_papers,total_hits=total_hits,has_next=page*20<total_papers,
+                               library_names=library_names,library_filter=library_filter,origin_filter=origin_filter)
 
     @bp.get('/reading')
     def shelf():
         rows=store.shelf();notes=store.list();catalog={}
         try:
-            for library in libraries.discover():
-                for paper in libraries.load(library).papers:catalog[(library,paper.id)]=paper.title
+            for library in libraries.scan()[0]:
+                try:
+                    for paper in libraries.load(library).papers:catalog[(library,paper.id)]=paper.title
+                except LibraryError:continue
         except LibraryError:pass
         for row in rows:
             row['progress']=json.loads(row['value']);row['title']=catalog.get((row['library'],row['paper']),row['paper'])
@@ -103,6 +111,14 @@ def personal_blueprint(libraries,store,index,translations,guard):
             key=store.create(library_key,paper_key,data,blocks,version)
             return jsonify(id=key),201
         notes=[relocate(row,blocks,version) for row in store.list(library_key,paper_key)]
+        block_order={anchor:index for index,anchor in enumerate(blocks)}
+        def document_position(note):
+            anchor=note['resolved_anchor']
+            if anchor not in block_order:
+                return (len(block_order), float('inf'))
+            positions=matching_positions(blocks[anchor],note['quote'],note['prefix'],note['suffix'])
+            return (block_order[anchor],positions[0] if len(positions)==1 else float('inf'))
+        notes.sort(key=document_position)
         progress=store.progress(library_key,paper_key)
         return jsonify(notes=notes,progress=relocate(progress,blocks,version) if progress else None,document_version=version)
 

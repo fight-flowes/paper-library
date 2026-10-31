@@ -41,7 +41,8 @@ def test_every_llm_payload_uses_shared_dotenv_temperature(tmp_path, temperature)
     source = ('This is a sufficiently long academic paragraph describing the context of a study and demonstrating\n\n'
               'that the next sufficiently long paragraph may be related to the first one and should be examined.')
     repair(source, settings=settings, transport=transport)
-    GuideService(settings, transport=transport)._ask({'task': '章节导读'}, [])
+    GuideService(settings, transport=transport)._ask({'task': '章节导读'}, [
+        {'id': 'source-1', 'text': 'A paragraph with enough evidence to summarize.'}])
     assert calls == [float(temperature)] * 3
 
 

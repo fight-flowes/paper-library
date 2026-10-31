@@ -1,10 +1,11 @@
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({executablePath:process.env.PAPER_TEST_BROWSER || undefined});
   try {
     const page = await browser.newPage({viewport:{width:1440,height:960}});
-    const errors=[]; page.on('pageerror',error=>errors.push(error.message));
+    await page.route('**/*',route=>['GET','HEAD'].includes(route.request().method())?route.continue():route.abort());
+    const errors=[]; page.on('pageerror',error=>errors.push(error.stack || error.message));
     await page.goto((process.env.PAPER_READER_URL || 'http://127.0.0.1:18020')+'/library/whitespace/paper/ws-p0003');
     assert(await page.locator('.reader-sidebar').isVisible(), 'desktop has a reading sidebar');
     const article=await page.locator('.article-column').boundingBox();
@@ -12,7 +13,7 @@ const assert = require('node:assert/strict');
     const notes=await page.locator('#notes-panel').boundingBox();
     assert(notes.x>=article.x+article.width, 'notes must not cover the paper');
     assert.equal(await page.locator('#close-notes').count(),0);
-    assert(!(await page.locator('#selected-quote').innerText()).includes('请先'));
+    assert.equal(await page.locator('#selected-quote, #note-text, #notes-panel #add-highlight').count(),0);
     await page.getByRole('button',{name:'目录',exact:true}).click();
     assert(await page.locator('.paper-toc').isVisible());
     await page.getByRole('button',{name:'收起阅读栏'}).click();

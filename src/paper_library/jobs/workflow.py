@@ -8,9 +8,11 @@ import time
 import json
 import hashlib
 from typing import Any
+from urllib.parse import urlparse
 
 from paper_library.catalog import LibraryRepository, PaperPaths
 from paper_library.ingest.service import ingest_pdf, refresh_metadata, IngestOutcome
+from paper_library.metadata.service import _TRUSTED_DOMAINS
 from paper_library.translation.batch import load_tasks, run_batch
 from paper_library.translation.service import TranslationService, TranslationError
 
@@ -19,6 +21,42 @@ from .repository import JobRepository, _safe_error
 from .uploads import UploadStager
 from paper_library.storage.locking import gate, paper_lock
 from paper_library.storage.history import checkpoint
+
+
+_METADATA_MESSAGES = {
+    'verified': '论文信息已核验',
+    'unavailable': '检索服务暂不可用，可稍后重试',
+    'not_found': '未找到可核实的官方记录，可补充 DOI 或标题后重试',
+    'ambiguous': '找到候选，但证据不足以自动确认',
+    'conflict': '官方记录与本地论文信息冲突，请核对候选',
+}
+
+
+def _metadata_candidates(enrichment: dict) -> list[dict[str, str]]:
+    """Expose only bounded, official HTTPS links from stored search results."""
+    selected = []
+    seen = set()
+    for item in enrichment.get('candidates', []):
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get('url') or '').strip()
+        parsed = urlparse(url)
+        domain = (parsed.hostname or '').lower()
+        try:
+            safe = (parsed.scheme == 'https' and domain in _TRUSTED_DOMAINS and
+                    not parsed.username and not parsed.password and parsed.port is None)
+        except ValueError:
+            safe = False
+        if not safe or url in seen:
+            continue
+        title = str(item.get('title') or '').strip()[:240]
+        if not title:
+            continue
+        selected.append({'title': title, 'url': url, 'domain': domain})
+        seen.add(url)
+        if len(selected) == 5:
+            break
+    return selected
 
 
 class _CancellationView:
@@ -54,6 +92,7 @@ class JobWorkflow:
         paragraph_repairer=None,
         structure_generator=None,
         project_root=None,
+        metadata_refresher=None,
     ) -> None:
         self.jobs = jobs
         self.uploads = uploads
@@ -67,6 +106,7 @@ class JobWorkflow:
         self.paragraph_repairer = paragraph_repairer
         self.structure_generator = structure_generator
         self.project_root = project_root or libraries.root.parent
+        self.metadata_refresher = metadata_refresher
 
     def run(self, job: JobRecord, cancelled: Callable[[], bool]) -> None:
         def observed_cancel() -> bool:
@@ -101,7 +141,10 @@ class JobWorkflow:
             def parser_event(message: str) -> None:
                 # Only expose recognized processing steps, never raw parser logs.
                 text = message.lower()
-                labels = [('ocr', '正在识别文字'), ('layout', '正在分析版面'),
+                labels = [('uploading', '正在上传 PDF 至 cicore01'),
+                          ('downloading parsed', '正在取回解析结果'),
+                          ('connecting', '正在连接 cicore01'),
+                          ('ocr', '正在识别文字'), ('layout', '正在分析版面'),
                           ('formula', '正在识别公式'), ('table', '正在识别表格'),
                           ('predict', '正在解析页面内容'), ('loading', '正在加载解析模型')]
                 for word, label in labels:
@@ -143,13 +186,14 @@ class JobWorkflow:
         self._check_import_results(job, paper_id, cancelled, recheck=reused_paper)
         if self.structure_generator is not None and not cancelled():
             paths = PaperPaths.for_id(self.libraries.load(job.library_id).descriptor.root, paper_id)
-            self.jobs.update(job.id, JobStage.STRUCTURING, activity={'message': '正在校对文本结构'})
-            self._outcome(job, 'structure', 'running', '正在校对文本结构')
+            self.jobs.update(job.id, JobStage.STRUCTURING, activity={'message': '正在校对文本结构与目录'})
+            self._outcome(job, 'structure', 'running', '正在校对文本结构与目录')
             try:
                 result = self.structure_generator(paths.markdown, cancelled=cancelled,
                     progress=lambda done, total: self.jobs.update(job.id, JobStage.STRUCTURING,
-                        activity={'message': '正在校对文本结构', 'done': done, 'total': total, 'unit': '块'}))
-                uncertain = sum(row['role'] == 'unknown' for row in result['annotations'])
+                        activity={'message': '正在校对文本结构与目录', 'done': done, 'total': total, 'unit': '项'}))
+                uncertain = len({row['id'] for row in result['annotations'] if row['role'] == 'unknown'}
+                    | set(result.get('outline_review', {}).get('uncertain', [])))
                 self._outcome(job, 'structure', 'warning' if uncertain else 'completed',
                     f"已校对 {len(result['annotations'])} 块；保留原样待确认 {uncertain} 块")
             except (ValueError, OSError) as exc:
@@ -196,7 +240,8 @@ class JobWorkflow:
                 stop_event=_CancellationView(cancelled),
                 progress=lambda _message: None,
                 on_update=update_progress,
-                retry_warnings=reused_paper,
+                retry_warnings=False,
+                retry_integrity=reused_paper,
             )
         except TranslationError:
             # Service/configuration failures are recoverable per-stage failures.
@@ -208,10 +253,16 @@ class JobWorkflow:
                           pending=0, results=[], interrupted=False)
         update_progress(report, None)
         reading_warnings = sum(bool(item.get('warnings')) for item in report.get('results', []))
+        integrity_warnings = sum(bool(item.get('integrity_warnings')) for item in report.get('results', []))
         failed = int(report.get('failed', 0))
-        self._outcome(job, 'translation', 'warning' if failed or reading_warnings or service_failed else 'completed',
-                      f"已保存 {report.get('cached', 0) + report.get('translated', 0)} / {report.get('total', 0)} 段；失败 {failed} 段；阅读提示 {reading_warnings} 段",
-                      failed=failed, reading_warnings=reading_warnings)
+        total = int(report.get('total', len(tasks)))
+        saved = int(report.get('cached', 0)) + int(report.get('translated', 0))
+        pending = int(report.get('pending', max(0, total - saved - failed)))
+        incomplete = service_failed or failed > 0 or pending > 0 or saved < total or integrity_warnings > 0
+        quality = f"；完整性需校对 {integrity_warnings} 段" if integrity_warnings else ''
+        self._outcome(job, 'translation', 'warning' if incomplete else 'completed',
+                      f"已保存 {saved} / {total} 段；失败 {failed} 段；阅读提示 {reading_warnings} 段" + quality,
+                      failed=failed, reading_warnings=reading_warnings, integrity_warnings=integrity_warnings)
         if cancelled() or report.get("interrupted"):
             self.jobs.cancel(job.id)
         else:
@@ -233,14 +284,16 @@ class JobWorkflow:
         if recheck and not cancelled() and job.enrich and metadata.get('enrichment', {}).get('status') != 'verified':
             self.jobs.update(job.id, JobStage.ENRICHING, activity={'message': '重新检索并核对论文信息'})
             try:
-                refresh_metadata(self.libraries, job.library_id, paper_id)
+                (self.metadata_refresher or refresh_metadata)(self.libraries, job.library_id, paper_id, cancelled=cancelled)
                 metadata = json.loads(paths.metadata.read_text())
             except (ValueError, OSError):
                 pass
         enrichment = metadata.get('enrichment', {})
         status = enrichment.get('status')
         self._outcome(job, 'metadata', 'completed' if status == 'verified' else 'warning' if job.enrich else 'skipped',
-                      '论文信息已核验' if status == 'verified' else '论文信息未能确认，可重试核验' if job.enrich else '未启用信息检索')
+                      _METADATA_MESSAGES.get(status, '论文信息未能确认，可重试核验') if job.enrich
+                      else '未启用信息检索',
+                      reason=status or 'unknown', candidates=_metadata_candidates(enrichment) if job.enrich else [])
         source_hash = hashlib.sha256(paths.markdown.read_bytes()).hexdigest() if paths.markdown.exists() else None
         reports = []
         for path in paths.root.glob('paragraph-repairs/*/report.json'):

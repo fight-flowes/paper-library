@@ -12,6 +12,19 @@ from paper_library.catalog import LibraryRepository,PaperPaths
 from paper_library.operations.health import check
 
 
+def _mirror_copies(settings, source):
+    local=settings.values.get('PAPER_BACKUP_MIRROR_DIR')
+    if local:mirror_backup(source,local)
+    if settings.values.get('PAPER_BACKUP_REMOTE_DIR'):
+        from paper_library.storage.remote_backup import mirror_backup_remote
+        try:
+            result=mirror_backup_remote(settings,source)
+            record_backup_status(settings,remote_mirror={**result,'status':'ok','verified_at':datetime.now(timezone.utc).isoformat()})
+        except (ValueError,OSError):
+            record_backup_status(settings,remote_mirror={'status':'error','server':'cicore01'})
+            raise
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='scripts/ops',description='备份、恢复预览、版本记录和运行检查')
     commands=parser.add_subparsers(dest='command',required=True)
@@ -48,14 +61,12 @@ def main(argv=None):
                         try:verify_backup(latest)
                         except ValueError:pass
                         else:
-                            mirror=settings.values.get('PAPER_BACKUP_MIRROR_DIR')
-                            if mirror:mirror_backup(latest,mirror)
+                            _mirror_copies(settings,latest)
                             record_backup_status(settings,status='ok',verified_at=datetime.now(timezone.utc).isoformat(),backup=str(latest))
                             print('最近备份校验通过，仍在计划间隔内');return 0
             record_backup_status(settings,status='waiting')
             path=create_backup(settings,directory,wait_seconds=int(settings.values.get('PAPER_BACKUP_WAIT_SECONDS','300')) if args.scheduled else 0)
-            mirror=settings.values.get('PAPER_BACKUP_MIRROR_DIR')
-            if mirror:mirror_backup(path,mirror)
+            _mirror_copies(settings,path)
             record_backup_status(settings,status='ok',verified_at=datetime.now(timezone.utc).isoformat(),backup=str(path))
             print('备份已保存并校验：'+str(path))
             if args.scheduled:prune_backups(directory,int(settings.values.get('PAPER_BACKUP_KEEP','7')))

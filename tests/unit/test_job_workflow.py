@@ -239,7 +239,7 @@ def test_ingest_stage_events_reach_durable_job(job_context):
     assert 'total' not in seen[2].activity
 
 
-def test_reading_warnings_affect_completion_and_guide_still_runs(job_context):
+def test_readable_translation_notices_do_not_block_completion(job_context):
     context = job_context
     job = context.create()
     called = []
@@ -250,11 +250,43 @@ def test_reading_warnings_affect_completion_and_guide_still_runs(job_context):
     context.workflow.batch_runner = batch
     context.workflow.run(job, lambda: False)
     saved = context.jobs.get(job.id)
-    assert saved.state == JobState.COMPLETED_WITH_WARNINGS
+    assert saved.state == JobState.COMPLETED
+    assert saved.outcomes['translation']['status'] == 'completed'
     assert saved.outcomes['translation']['reading_warnings'] == 1
     assert saved.outcomes['guide']['status'] == 'completed'
     assert len(called) == 1
     assert saved.progress.total == 2
+
+
+def test_translation_content_loss_remains_a_warning_after_requests_complete(job_context):
+    context = job_context
+    job = context.create()
+    context.workflow.batch_runner = lambda *a, **kw: {
+        'total': 2, 'cached': 2, 'translated': 0, 'failed': 0, 'pending': 0,
+        'results': [{'warnings': ['missing marker'], 'integrity_warnings': ['missing marker']},
+                    {'warnings': [], 'integrity_warnings': []}]}
+    context.workflow.run(job, lambda: False)
+    saved = context.jobs.get(job.id)
+    assert saved.state == JobState.COMPLETED_WITH_WARNINGS
+    assert saved.outcomes['translation']['status'] == 'warning'
+    assert saved.outcomes['translation']['integrity_warnings'] == 1
+    assert context.jobs.reconcile_quality_notices() == 0
+
+
+def test_reused_paper_only_retries_missing_or_incomplete_translation(job_context):
+    context = job_context
+    job = context.create()
+    context.jobs.update(job.id, JobStage.PUBLISHED, paper_id='ws-p0003')
+    seen = []
+
+    def batch(*args, **kwargs):
+        seen.append((kwargs['retry_warnings'], kwargs['retry_integrity']))
+        return {'total': 2, 'cached': 2, 'translated': 0, 'failed': 0,
+                'pending': 0, 'interrupted': False}
+
+    context.workflow.batch_runner = batch
+    context.workflow.run(context.jobs.get(job.id), lambda: False)
+    assert seen == [(False, True)]
 
 
 def test_guide_failure_is_visible_and_retry_does_not_parse_again(job_context):
@@ -285,6 +317,30 @@ def test_unverified_metadata_is_a_warning_even_with_successful_translation(job_c
     assert saved.state == JobState.COMPLETED_WITH_WARNINGS
     assert saved.outcomes['metadata']['status'] == 'warning'
     assert saved.outcomes['translation']['status'] == 'completed'
+
+
+@pytest.mark.parametrize(('reason', 'message'), [
+    ('unavailable', '检索服务暂不可用'),
+    ('not_found', '未找到可核实的官方记录'),
+    ('ambiguous', '找到候选，但证据不足'),
+    ('conflict', '官方记录与本地论文信息冲突'),
+])
+def test_metadata_warning_explains_reason_and_safe_candidates(job_context, reason, message):
+    from dataclasses import replace
+    context = job_context
+    job = replace(context.create(auto_translate=False), enrich=True)
+    paths = PaperPaths.for_id(context.libraries.load('whitespace').descriptor.root, 'ws-p0003')
+    paths.metadata.write_text(json.dumps({'enrichment': {'status': reason, 'candidates': [
+        {'title': 'Official candidate', 'url': 'https://arxiv.org/abs/2510.10271', 'domain': 'arxiv.org'},
+        {'title': 'Unsafe', 'url': 'http://internal.invalid/paper', 'domain': 'internal.invalid'},
+    ]}}))
+    context.workflow.run(job, lambda: False)
+    outcome = context.jobs.get(job.id).outcomes['metadata']
+    assert outcome['status'] == 'warning'
+    assert message in outcome['message']
+    assert outcome['reason'] == reason
+    assert outcome['candidates'] == [
+        {'title': 'Official candidate', 'url': 'https://arxiv.org/abs/2510.10271', 'domain': 'arxiv.org'}]
 
 
 def test_structure_stage_runs_before_translation_with_progress(job_context):
@@ -339,7 +395,7 @@ def test_duplicate_import_checks_missing_metadata_and_repairs(job_context, monke
 
 def test_warning_job_can_enable_translation(job_context):
     context = job_context; job = context.create(auto_translate=False)
-    context.workflow.structure_generator = lambda *a, **kw: {'annotations':[{'role':'unknown'}]}
+    context.workflow.structure_generator = lambda *a, **kw: {'annotations':[{'id':'source-1','role':'unknown'}]}
     context.workflow.run(job,lambda:False)
     queued = context.jobs.enable_translation(job.id)
     assert queued.auto_translate and queued.state == JobState.QUEUED

@@ -1,4 +1,4 @@
 <nav class="workspace-nav" aria-label="主导航">
-{% for href,label in [('/', '论文库'),('/search','全文搜索'),('/reading','最近阅读'),('/manage/status','运行状态')] %}
-<a href="{{ href }}"{% if request.path == href or (href == '/' and request.path.startswith('/library/')) %} aria-current="page"{% endif %}>{{ label }}</a>
+{% for href,label in [('/', '论文库'),('/search','全文搜索'),('/reading','最近阅读'),('/manage/status','运行状态'),('/manage/settings','设置')] %}
+<a href="{{ href }}"{% if href == '/manage/settings' %} class="workspace-settings-link" aria-label="设置" title="设置"{% endif %}{% if request.path == href or (href == '/' and request.path.startswith('/library/')) %} aria-current="page"{% endif %}>{% if href == '/manage/settings' %}<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9.5 3-.7 2.2-2 .9L4.6 6l-2 3.4L4.2 11v2l-1.6 1.6 2 3.4 2.2-.1 2 .9.7 2.2h5l.7-2.2 2-.9 2.2.1 2-3.4-1.6-1.6v-2l1.6-1.6-2-3.4-2.2.1-2-.9-.7-2.2Z"/><circle cx="12" cy="12" r="3"/></svg>{% else %}{{ label }}{% endif %}</a>
 {% endfor %}</nav>

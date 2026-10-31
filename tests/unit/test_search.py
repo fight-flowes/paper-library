@@ -44,3 +44,17 @@ def test_translation_update_reindexes_only_its_paper(tmp_path,monkeypatch):
     revisions['lib/a']+=1
     assert index.sync(repository,service)==[]
     assert calls==['Text for a','Text for b','Text for a']
+
+
+def test_search_filters_apply_before_counts_and_pagination(tmp_path):
+    index=SearchIndex(tmp_path/'search.sqlite3')
+    with index.connect() as db:
+        for library in ('one','two'):
+            identity=library+'/p'
+            db.execute('INSERT INTO documents VALUES (?,?,?,?,?)',(identity,library,'p','Paper','v'))
+            for origin in ('metadata','original','translation'):
+                db.execute('INSERT INTO fragments(identity,anchor,origin,text) VALUES (?,?,?,?)',(identity,'source-3',origin,'needle'))
+    rows,papers,hits=index.page('needle',library='one',origin='translation')
+    assert len(rows)==papers==hits==1
+    assert rows[0]['library']=='one' and rows[0]['origin']=='translation'
+    assert index.page('needle',library="one' OR 1=1 --")[1:] == (0,0)

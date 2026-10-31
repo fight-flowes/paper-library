@@ -235,6 +235,32 @@ def test_arxiv_abs_and_html_candidates_are_one_paper() -> None:
     assert result.bibliography["publication_date"] == "2025-05"
 
 
+def test_truncated_trusted_title_is_extracted_before_rejecting():
+    title = 'MetaBreak: Jailbreaking Online LLM Services via Special Token Manipulation'
+    url = 'https://arxiv.org/abs/2510.10271'
+    gateway = FakeGateway(response(200, {'status': 'ready'}, 'ready'),
+        response(200, {'results': [{'title': '[2510.10271] MetaBreak: Jailbreaking Online LLM Services via Special Token ...',
+                                   'url': url, 'content': 'paper'}]}, 'search'),
+        response(200, {'results': [{'url': url, 'raw_content': f'# Title:{title}'}]}, 'extract'))
+    result = enrich_bibliography(title, '', '', gateway)
+    assert result.status == 'verified'
+    assert result.bibliography['canonical_title'] == title
+
+
+def test_ambiguous_search_exposes_only_trusted_candidate_links():
+    title = 'A Paper Title With A Similar Alternative'
+    gateway = FakeGateway(response(200, {'status': 'ready'}, 'ready'),
+        response(200, {'results': [
+            {'title': title, 'url': 'https://arxiv.org/abs/2501.11111', 'content': title},
+            {'title': title, 'url': 'https://aclanthology.org/2025.acl-long.1/', 'content': title},
+            {'title': title, 'url': 'https://example.org/unsafe', 'content': title},
+        ]}, 'search'), response(200, {}, 'extract'))
+    result = enrich_bibliography(title, '', '', gateway)
+    assert result.status == 'ambiguous'
+    assert {item['url'] for item in result.enrichment['candidates']} == {
+        'https://arxiv.org/abs/2501.11111', 'https://aclanthology.org/2025.acl-long.1/'}
+
+
 def test_acl_lookup_retries_with_anthology_site_filter() -> None:
     title = "Do Llamas Work in English On the Latent Language of Multilingual Transformers"
     acl_url = "https://aclanthology.org/2024.acl-long.820"

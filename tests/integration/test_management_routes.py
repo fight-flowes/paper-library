@@ -86,6 +86,47 @@ def test_subject_creation_validates_name_and_authorization(tmp_path: Path):
     assert client.post('/manage/subjects', data=data).status_code == 400
 
 
+def test_library_creation_persists_and_accepts_subjects_and_uploads(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    app = create_app(settings, start_jobs=False)
+    client = app.test_client()
+    token = app.extensions['management_guard'].token
+    response = client.post('/manage/libraries', data={
+        'management_token': token, 'name': '  强化学习 "RL"  ',
+    })
+    assert response.status_code == 201
+    library = response.json['library']
+    assert library['name'] == '强化学习 "RL"'
+    repository = app.extensions['library_repository']
+    assert repository.load(library['id']).papers == ()
+    assert repository.validate_all() == ()
+    assert client.post('/manage/subjects', data={
+        'management_token': token, 'library_id': library['id'], 'subject': 'Policy',
+    }).status_code == 201
+    response = upload(client, token, library_id=library['id'], subject='Policy')
+    assert response.status_code == 303
+    job = app.extensions['job_repository'].get(response.headers['Location'].rsplit('/', 1)[-1])
+    assert job.library_id == library['id']
+    restarted = create_app(settings, start_jobs=False)
+    assert library['id'] in restarted.extensions['library_repository'].discover()
+
+
+def test_library_creation_rejects_invalid_names_duplicates_and_unauthorized_requests(tmp_path: Path):
+    app = create_app(make_settings(tmp_path), start_jobs=False)
+    client = app.test_client()
+    assert client.post('/manage/libraries', data={'name': 'New'}).status_code == 403
+    token = app.extensions['management_guard'].token
+    for name in (' ', 'x' * 121, 'a\nb', ' whitespace '):
+        assert client.post('/manage/libraries', data={
+            'management_token': token, 'name': name,
+        }).status_code == 400
+    assert set(app.extensions['library_repository'].discover()) == {'whitespace'}
+    remote = create_app(make_settings(tmp_path / 'remote', PAPER_LIBRARY_HOST='0.0.0.0'), start_jobs=False)
+    assert remote.test_client().post('/manage/libraries', data={
+        'management_token': remote.extensions['management_guard'].token, 'name': 'New',
+    }).status_code == 403
+
+
 def test_mutations_require_token_and_remote_opt_in(tmp_path: Path) -> None:
     app = create_app(make_settings(tmp_path), start_jobs=False)
     client = app.test_client()
@@ -112,9 +153,10 @@ def test_job_api_has_allowlisted_fields_and_no_sensitive_paths(tmp_path: Path) -
 
     assert set(payload) == {
         "id", "filename", "library", "subject", "state", "stage",
-        "paper_url", "progress", "activity", "outcomes", "error", "created_at", "updated_at",
+        "paper_url", "progress", "activity", "outcomes", "error", "created_at", "updated_at", "title", "library_name",
     }
     serialized = api.get_data(as_text=True)
+    assert payload['title'] == payload['filename'] and payload['library_name'] == 'Whitespace'
     assert "/home/" not in serialized
     assert "API_KEY" not in serialized
     assert "source.pdf" not in serialized

@@ -44,6 +44,7 @@ class JobRunner:
         self._active_lock = Lock()
         self._active_id: str | None = None
         self._active_cancel: Event | None = None
+        self._active_configuration = None
         self._last_tick = None
         self._last_error = None
         self._coordinator = False
@@ -82,6 +83,7 @@ class JobRunner:
         healthy = alive and self._last_error is None and (age is None or age < max(60, self.poll_seconds*3, self.lease_seconds*3))
         return {'status': 'ok' if healthy else 'error', 'alive': alive,
                 'coordinator': self._coordinator, 'active_job': self._active_id,
+                'configuration': self._active_configuration,
                 'last_heartbeat_seconds': age, 'error_type': self._last_error}
 
     def _supervised_loop(self):
@@ -146,6 +148,7 @@ class JobRunner:
         heartbeat.start()
         try:
             workflow = self.workflow_factory()
+            self._active_configuration = getattr(workflow, 'configuration', None)
             def observe():
                 if cancelled.is_set(): return True
                 if self._stop.is_set(): raise WorkerStopping()
@@ -170,6 +173,7 @@ class JobRunner:
             with self._active_lock:
                 self._active_id = None
                 self._active_cancel = None
+                self._active_configuration = None
 
     def _heartbeat(self, job_id: str, stopped: Event) -> None:
         interval = max(0.1, self.lease_seconds / 3)

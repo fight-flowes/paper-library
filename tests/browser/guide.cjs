@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
   const browser = await chromium.launch({headless: true, executablePath: process.env.PAPER_TEST_BROWSER || undefined});
   try {
     const page = await browser.newPage({viewport: {width: 1280, height: 900}});
+    await page.route('**/*',route=>['GET','HEAD'].includes(route.request().method())?route.continue():route.abort());
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const base = process.env.PAPER_READER_URL || 'http://127.0.0.1:18020';
@@ -12,11 +13,17 @@ const assert = require('node:assert/strict');
     await page.getByLabel('更多阅读操作', {exact:true}).click();
     await page.locator('.guide-toolbar').click();
     assert(await page.locator('#reading-guide').evaluate(el => el.open));
-    assert((await page.locator('#reading-guide .guide-points > li').count()) > 5);
+    assert((await page.locator('#reading-guide > .guide-points > li').count()) > 0);
     assert((await page.locator('.paper-body .section-reading-guide').count()) > 5);
-    const section = page.locator('#reading-guide .guide-section').filter({has: page.locator('.guide-depth')}).first();
-    assert(await section.count(), 'rich sections offer detailed explanations');
-    await section.locator(':scope > summary').click();
+    assert.equal(await page.locator('.guide-section .guide-depth').count(), 0, 'chapter content is loaded on demand');
+    let section;
+    for (const candidate of await page.locator('#reading-guide .guide-section').all()) {
+      await candidate.locator(':scope > summary').click();
+      await candidate.locator('[data-guide-content][data-loaded]').waitFor();
+      if (await candidate.locator('.guide-depth').count()) { section = candidate;break; }
+      await candidate.locator(':scope > summary').click();
+    }
+    assert(section, 'rich sections offer detailed explanations');
     const depth = section.locator('.guide-depth');
     assert.equal(await depth.evaluate(el => el.open), false, 'details are collapsed by default');
     const detailText = depth.locator('.guide-points > li').first();

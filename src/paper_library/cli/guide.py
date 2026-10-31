@@ -18,7 +18,9 @@ def main(argv=None):
         scope.add_argument('--all', action='store_true')
         command.add_argument('--paper')
         if name == 'run':
-            command.add_argument('--force', action='store_true', help='重新生成，不复用已有章节缓存')
+            mode = command.add_mutually_exclusive_group()
+            mode.add_argument('--force', action='store_true', help='重新生成，不复用已有章节缓存')
+            mode.add_argument('--overview-only', action='store_true', help='仅重算全文概览，复用已校验的章节导读')
     arguments = sys.argv[1:] if argv is None else argv
     if not arguments:
         parser.print_help()
@@ -44,7 +46,8 @@ def main(argv=None):
                 print(f'{library_id}/{paper.id}', flush=True)
                 if service or args.command == 'reconcile':
                     try:
-                        guide = reconcile_guide(paths.root) if args.command == 'reconcile' else service.generate(paths.markdown, force=args.force, progress=lambda text: print(text, flush=True))
+                        options = {'overview_only': True} if getattr(args, 'overview_only', False) else {}
+                        guide = reconcile_guide(paths.root) if args.command == 'reconcile' else service.generate(paths.markdown, force=args.force, progress=lambda text: print(text, flush=True), **options)
                     except (ValueError, OSError) as exc:
                         failures.append(f'{library_id}/{paper.id}')
                         print(f'错误：{library_id}/{paper.id}：{exc}', file=sys.stderr, flush=True)

@@ -18,6 +18,7 @@ _QUANTITY = re.compile(
     r'(?!\w)|[⁰¹²³⁴⁵⁶⁷⁸⁹]+'
 )
 _MARKER = re.compile(r'⟦PH_[a-f0-9]+_\d+⟧')
+_CHAT_CONTROL_TOKEN = re.compile(r'(<\|[^<>\n|]{1,64}\|?>)')
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,20 @@ class TranslationSegment:
     numeric_markers: tuple[str, ...] = ()
     heading_prefix: str = ""
     formula_markers: tuple[str, ...] = ()
+
+    def literal_urls(self) -> tuple[str, ...]:
+        text = self.text
+        for marker, _ in self.protected:
+            if marker not in self.numeric_markers:
+                text = text.replace(marker, ' ')
+        urls = []
+        for match in re.finditer(r'https?://[^\s<>"`]+', text):
+            url = match[0].rstrip('.,;:!?，。；：！？')
+            pairs = {')': '(', ']': '[', '}': '{'}
+            while url and url[-1] in pairs and url.count(url[-1]) > url.count(pairs[url[-1]]):
+                url = url[:-1].rstrip('.,;:!?，。；：！？')
+            urls.append(url)
+        return tuple(urls)
 
     def warnings(self, translated: str) -> list[str]:
         expected = Counter(marker for marker, _ in self.protected)
@@ -41,6 +56,8 @@ class TranslationSegment:
             notes.append(f'重复或新增 {extra} 个标记，请对照原文')
         if re.search(r'⟦PH_\d+⟧', translated):
             notes.append('符号缺失：存在无法识别的标记')
+        if '⟦PH_' in _MARKER.sub('', re.sub(r'⟦PH_\d+⟧', '', translated)):
+            notes.append('符号缺失：存在损坏的标记')
         prose = re.sub(r'⟦PH_(?:[a-f0-9]+_)?\d+⟧', '', translated)
         if re.search(r'[\d⁰¹²³⁴⁵⁶⁷⁸⁹]', prose):
             notes.append('译文包含新增数字，请按需对照原文')
@@ -48,7 +65,23 @@ class TranslationSegment:
             notes.append('格式异常，已降级展示')
         if '〔译文未完整生成〕' in translated:
             notes.append('译文未完整生成')
+        if '〔解析文本变量缺失〕' in translated:
+            notes.append('解析文本缺少变量，请对照 PDF')
+        if any(translated.count(url) < count for url, count in Counter(self.literal_urls()).items()):
+            notes.append('原文链接被改写或遗漏，请对照原文')
         return notes
+
+    def integrity_warnings(self, translated: str) -> list[str]:
+        """Distinguish missing source content from advisory generated digits."""
+        return [note for note in self.warnings(translated)
+                if note not in {'译文包含新增数字，请按需对照原文', '解析文本缺少变量，请对照 PDF'}]
+
+    def integrity_score(self, translated: str) -> int:
+        expected = Counter(marker for marker, _ in self.protected)
+        actual = Counter(_MARKER.findall(translated))
+        return (sum((expected - actual).values()) + sum((actual - expected).values())
+                + len(self.integrity_warnings(translated))
+                + (100 if '〔译文未完整生成〕' in translated else 0))
 
     def _format_changed(self, translated: str) -> bool:
         # Only paired formatting tags need strict ordering for safe HTML.
@@ -77,6 +110,7 @@ class TranslationSegment:
                 return ''
             return fragment.strip() if fragment.strip() in {'<br />', '<br>'} else fragment
         output = re.sub(r'⟦PH_(?:[a-f0-9]+_)?\d+⟧', restore, output)
+        output = re.sub(r'⟦PH_[A-Za-z0-9_]*(?:⟧)?', '〔符号缺失〕', output)
         notes = [note for note in self.warnings(translated)
                  if note not in {'译文未完整生成', '译文包含新增数字，请按需对照原文'}]
         if notes:
@@ -125,8 +159,21 @@ def add_translation_slots(tokens: list[Token], parser: MarkdownIt) -> tuple[Tran
                     citation = re.fullmatch(r'([a-z]{2,})(\d+(?:[,+-]\d+)*)', fragment)
                     if citation:
                         return citation[1] + protect(citation[2], numeric=True)
+                    # PDF extraction often joins an affiliation or footnote number
+                    # to a capitalized name. Preserve only the number so the name
+                    # remains available to the translator. Model names such as
+                    # GPT4All and mixed alphanumeric versions stay protected.
+                    labeled_name = re.fullmatch(r'(\d{1,3})([A-Z][a-z]{2,}[A-Za-z]*|We|In|As|It|On|By|An|At|To|Of|Is|If|Or|No|Do|He|So)', fragment)
+                    if labeled_name:
+                        return protect(labeled_name[1], numeric=True) + labeled_name[2]
                     return protect(html.escape(fragment), numeric=True)
-                parts.append(_QUANTITY.sub(protect_quantity, child.content))
+                for piece in _CHAT_CONTROL_TOKEN.split(child.content):
+                    if not piece:
+                        continue
+                    if _CHAT_CONTROL_TOKEN.fullmatch(piece):
+                        parts.append(protect(html.escape(piece)))
+                    else:
+                        parts.append(_QUANTITY.sub(protect_quantity, piece))
             elif child.type == "softbreak":
                 parts.append('\n')
             else:

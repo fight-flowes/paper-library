@@ -95,3 +95,7 @@ class JobRecord:
 
 class InvalidTransition(RuntimeError):
     """Raised when a durable job is moved to an invalid state."""
+
+
+class QueueFull(ValueError):
+    """A new or resumed job would exceed the durable queue limit."""

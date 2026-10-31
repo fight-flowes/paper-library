@@ -1,0 +1,25 @@
+{% macro outline(nodes) %}
+<ol>
+{% for node in nodes %}
+  <li class="toc-level-{{ node.heading.level }}">
+    {% if node.children %}<details class="toc-branch"{% if loop.first %} open{% endif %}><summary>{% endif %}
+    <a class="toc-link" data-heading-id="{{ node.heading.id }}" href="#{{ node.heading.id }}">{{ node.heading.text }}</a>
+    {% if node.children %}</summary>{{ outline(node.children) }}</details>{% endif %}
+  </li>
+{% endfor %}
+</ol>
+{% endmacro %}
+<div class="toc-tools">
+  <label class="visually-hidden" for="toc-search">筛选本文目录</label>
+  <input type="search" id="toc-search" placeholder="筛选章节" autocomplete="off">
+  <button type="button" id="toc-expand" aria-expanded="false">展开全部</button>
+</div>
+<p id="toc-empty" class="empty-note" role="status" hidden>没有匹配的章节</p>
+<nav class="paper-toc" aria-label="本文目录">
+{% for group in navigation.groups %}
+  <details class="toc-region" data-region="{{ group.key }}"{% if group.open %} open{% endif %}>
+    <summary>{{ group.label }} <span>{{ group.headings|length }}</span></summary>
+    {{ outline(group.nodes) }}
+  </details>
+{% endfor %}
+</nav>

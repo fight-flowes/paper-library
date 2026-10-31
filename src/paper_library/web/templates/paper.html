@@ -7,7 +7,9 @@
   {% set enrichment = metadata.get("enrichment", {}) %}
   <link rel="stylesheet" href="{{ url_for('static', filename='reading-guide.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='reading-layout.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='reader-tools.css') }}">
   <script defer src="{{ url_for('static', filename='reading-layout.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='reading-preferences.js') }}"></script>
   <header class="paper-toolbar">
     <div class="toolbar-left">
     <div class="toolbar-navigation"><a class="back-link" href="{{ url_for('library_index') }}" aria-label="返回论文库">← {{ library_name }}</a></div>
@@ -26,8 +28,14 @@
           <div class="translation-controls" data-translation-url="{{ url_for('paper_translation', paper_id=paper.id) }}" data-document-version="{{ document_version }}">
     <button class="sidebar-toggle" type="button" aria-label="收起阅读栏" aria-controls="reader-sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M13 9h5M13 13h5"/></svg></button>
             <button type="button" class="translation-toggle" aria-pressed="false" aria-label="中英对照" title="中英对照"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11M9 3v2M6 5c0 5 3 8 7 10M13 5c-1 5-4 9-9 11M14 21l4-10 4 10M15.5 17h5"/></svg></button>
-            <details class="reading-more"><summary aria-label="更多阅读操作" title="更多阅读操作">···</summary><div class="reading-more-menu">            <button type="button" class="translation-refresh" aria-label="刷新译文" title="刷新译文" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 3l1 3M4 12l1 3a8 8 0 0 0 13 3"/></svg><span>刷新译文</span></button>
-<a href="#reading-guide" class="guide-toolbar">全文导读</a></div></details>
+            <button id="add-highlight" type="button" aria-label="高亮选文" title="高亮选文" disabled data-enabled="{{ 'true' if personal_enabled else 'false' }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 15 8-11 5 5-11 8-2-2Z M9 15l-3 3 2 2 3-3 M3 21h8"/></svg></button>
+            <span id="highlight-status" class="highlight-status" role="status" aria-live="polite"></span>
+            <details class="reading-more"><summary aria-label="更多阅读操作" title="更多阅读操作"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></summary><div class="reading-more-menu">            <button type="button" class="translation-refresh" aria-label="刷新译文" title="刷新译文" hidden><span>刷新译文</span></button>
+<a href="#reading-guide" class="guide-toolbar">全文导读</a>
+<button type="button" class="citation-copy" data-citation-format="plain">复制普通引用</button>
+<button type="button" class="citation-copy" data-citation-format="bibtex">复制 BibTeX</button>
+<button type="button" id="open-reading-settings">阅读设置</button>
+<span id="citation-status" role="status" aria-live="polite"></span></div></details>
             <span class="translation-status" hidden role="status" aria-live="polite">显示已离线生成的中文译文</span>
           </div>
     {% else %}
@@ -41,6 +49,22 @@
     </div>
   </header>
 
+  <script id="citation-data" type="application/json">{{ citations|tojson }}</script>
+  <script defer src="{{ url_for('static', filename='citations.js') }}"></script>
+  <dialog id="citation-fallback" aria-labelledby="citation-fallback-title">
+    <form method="dialog"><strong id="citation-fallback-title">复制引用</strong><button aria-label="关闭复制窗口">×</button></form>
+    <p>自动复制不可用，请复制下方文本。</p>
+    <textarea aria-label="引用文本" readonly rows="10"></textarea>
+  </dialog>
+  <dialog id="reading-settings" aria-labelledby="reading-settings-title">
+    <form method="dialog" class="settings-heading"><strong id="reading-settings-title">阅读设置</strong><button aria-label="关闭阅读设置">×</button></form>
+    <p class="settings-hint">设置会保存在当前浏览器。</p>
+    <label for="reading-font-size">正文字号</label>
+    <select id="reading-font-size"><option value="16">小 · 16px</option><option value="18" selected>标准 · 18px</option><option value="20">大 · 20px</option><option value="22">特大 · 22px</option></select>
+    <label for="reading-line-height">正文行距</label>
+    <select id="reading-line-height"><option value="1.65">紧凑</option><option value="1.8" selected>标准</option><option value="2">宽松</option></select>
+    <button type="button" id="reset-reading-settings">恢复默认设置</button>
+  </dialog>
   <aside id="library-drawer" class="library-drawer" aria-label="最近阅读" hidden>
     <div class="drawer-header"><strong id="drawer-title">最近阅读</strong><button type="button" id="close-drawer" aria-label="关闭功能抽屉">×</button></div>
     <p id="drawer-status" role="status" aria-live="polite"></p>
@@ -57,23 +81,9 @@
     <div class="paper-layout">
       <aside class="reader-sidebar" id="reader-sidebar" aria-label="阅读工具">
         <div class="sidebar-tabs" role="group" aria-label="阅读栏视图"><button type="button" id="show-toc" aria-pressed="true">目录</button>{% if rendered %}<button type="button" id="open-notes" aria-pressed="false">标注</button>{% endif %}</div>
-        <div id="toc-panel">      {% if rendered and rendered.headings %}
-        <nav class="paper-toc" aria-label="本文目录">
-          <span class="nav-label">本文目录</span>
-          <ol>
-            {% for heading in rendered.headings %}
-              <li class="toc-level-{{ heading.level }}">
-                <a class="toc-link" data-heading-id="{{ heading.id }}" href="#{{ heading.id }}">{{ heading.text }}</a>
-              </li>
-            {% endfor %}
-          </ol>
-        </nav>
-      {% endif %}</div>
+        <div id="toc-panel">{% if rendered and rendered.headings %}{% include 'toc.html' %}{% endif %}</div>
   {% if rendered %}
   <section id="notes-panel" class="notes-panel" hidden data-personal-url="{{ url_for('personal.paper_records',library_key=g.library_id,paper_key=paper.id) }}" data-personal-token="{{ personal_token }}" data-version="{{ document_version }}" aria-label="标注">
-    <p id="selected-quote"></p>
-    <textarea id="note-text" rows="3" maxlength="20000" aria-label="新增笔记" placeholder="写下你的理解或疑问"></textarea>
-    <div class="notes-actions"><button id="add-note" {% if not personal_enabled %}disabled{% endif %}>保存笔记</button><button id="add-highlight" {% if not personal_enabled %}disabled{% endif %}>高亮选文</button></div>
     <p id="notes-status" role="status" aria-live="polite"></p><div id="notes-list"></div>
   </section>
   <script defer src="{{ url_for('static',filename='personal.js') }}"></script>
@@ -84,6 +94,14 @@
       <section class="article-column">
         {% if enrichment.status and enrichment.status != "verified" %}<p class="metadata-advisory article-metadata-advisory">书目信息：{{ enrichment.status }}{% if enrichment.message %}（{{ enrichment.message }}）{% endif %}</p>{% endif %}
         {% if rendered %}
+          <header class="reading-heading">
+            <h1>{{ paper.display_title }}</h1>
+            <div class="reading-heading-actions">
+              <span>{{ paper.year }}{% if paper.list_venue %} · {{ paper.list_venue }}{% endif %}</span>
+              {% if navigation.main %}<a class="article-jump" href="#{{ navigation.main.id }}">{% if navigation.combined %}跳到论文正文{% else %}开始阅读{% endif %} <span aria-hidden="true">↓</span></a>{% endif %}
+            </div>
+            {% if navigation.combined %}<p class="combined-document-note">此文件包含研究简报、论文正文及后续材料，可通过阅读目录切换。</p>{% endif %}
+          </header>
           {% include 'guide.html' %}
           <article class="paper-body">{{ rendered.html }}</article>
         {% else %}

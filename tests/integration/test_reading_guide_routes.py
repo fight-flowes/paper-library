@@ -30,9 +30,20 @@ def test_reader_escapes_guidance_and_hides_stale_content(tmp_path):
     assert '&lt;script&gt;bad()&lt;/script&gt;' in page
     assert '<script>bad()</script>' not in page
     assert 'href="#source-3"' in page and 'id="source-3"' in page
-    assert '本节概览' in page and '展开详细解读' in page
-    assert '<details class="guide-depth">' in page
+    assert 'data-guide-section="a-peculiar-section"' in page
+    assert '<details class="guide-depth">' not in page
+    endpoint = '/library/whitespace/paper/ws-p0001/guide'
+    response = client.get(endpoint, query_string={'version': data['document_version'], 'section': 'a-peculiar-section'})
+    assert response.status_code == 200 and response.headers['Cache-Control'] == 'no-store'
+    html = response.get_json()['html']
+    assert '本节概览' in html and '展开详细解读' in html
+    assert '&lt;script&gt;bad()&lt;/script&gt;' in html and '<script>bad()</script>' not in html
+    assert '<details class="guide-depth">' in html
+    assert client.get(endpoint, query_string={'version':'old','section':'a-peculiar-section'}).status_code == 409
+    assert client.get(endpoint, query_string={'version':data['document_version'],'section':'unknown'}).status_code == 404
+    assert client.post(endpoint).status_code == 405
     paths.markdown.write_text(source + '\nChanged.\n')
     page = client.get('/library/whitespace/paper/ws-p0001').get_data(as_text=True)
     assert '请重新生成导读' in page
     assert 'bad()' not in page
+    assert client.get(endpoint, query_string={'version':data['document_version'],'section':'a-peculiar-section'}).status_code == 409

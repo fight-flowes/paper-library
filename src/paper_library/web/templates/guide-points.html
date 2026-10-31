@@ -1,0 +1,12 @@
+{% macro points(items) %}
+  <ul class="guide-points">
+  {% for point in items %}
+    <li><span class="guide-kind">{{ point.kind }}</span> {% if point.label %}<strong>{{ point.label }}</strong>{% endif %}
+      <p>{{ point.text }}</p>
+      <details class="guide-evidence"><summary>查看原文依据</summary>
+        {% for evidence in point.evidence %}<blockquote><a href="#{{ evidence.id }}" class="guide-source">定位原文 ↗</a> {{ evidence.quote }}</blockquote>{% endfor %}
+      </details>
+    </li>
+  {% endfor %}
+  </ul>
+{% endmacro %}

@@ -1,0 +1,17 @@
+{% from 'guide-points.html' import points %}
+<a class="guide-source" href="#{{ section.id }}">查看本节原文 ↗</a>
+{% for part in section.parts %}
+  {% if part.points %}
+    <p class="guide-role">{{ part.role }}</p>
+    <p class="guide-overview-label">本节概览</p>
+    {{ points(part.points) }}
+    {% if part.details %}
+      <details class="guide-depth">
+        <summary>展开详细解读 · {{ part.details | length }} 个要点</summary>
+        {{ points(part.details) }}
+      </details>
+    {% endif %}
+  {% elif part.skip_reason %}
+    <p class="guide-role">{{ part.skip_reason }}</p>
+  {% endif %}
+{% endfor %}

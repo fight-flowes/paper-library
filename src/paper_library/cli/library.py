@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
                 label = labels[result.outcome.value]
             print(f"{label}：{result.library_id}/{result.paper_id}")
             return 0
-        result = refresh_metadata(repository, args.library, args.paper)
+        result = refresh_metadata(repository, args.library, args.paper, settings=settings)
         print(result)
         return 0
     except (LibraryError, OSError, ValueError) as error:

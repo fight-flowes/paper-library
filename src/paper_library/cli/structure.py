@@ -2,6 +2,7 @@
 import argparse
 import sys
 
+from paper_library.cli.progress import StructureProgress
 from paper_library.catalog import LibraryError, LibraryRepository, PaperPaths
 from paper_library.config import default_settings
 from paper_library.structure.document import load_structure
@@ -43,9 +44,11 @@ def main(argv=None):
                 print(f'{library}/{paper.id}', flush=True)
                 try:
                     if service:
-                        data = service.generate(paths.markdown, force=args.force,
-                            progress=lambda d,t:print(f'结构校对 {d}/{t} 块', flush=True))
-                        uncertain = sum(r['role'] == 'unknown' for r in data['annotations'])
+                        with StructureProgress() as progress:
+                            data = service.generate(paths.markdown, force=args.force,
+                                progress=progress.update)
+                        uncertain = len({r['id'] for r in data['annotations'] if r['role'] == 'unknown'}
+                            | set(data.get('outline_review', {}).get('uncertain', [])))
                         print(f'已保存 {len(data["annotations"])} 块，待确认 {uncertain} 块；{paths.root / "document-structure.json"}', flush=True)
                     else:
                         data = load_structure(paths.root, paths.markdown.read_text(encoding='utf-8'))

@@ -67,8 +67,20 @@ def recover_publications(library):
             shutil.rmtree(transaction)
             continue
         record = json.loads(journal.read_text())
+        if not isinstance(record, dict) or record.get('state') not in ('prepared', 'committed'):
+            raise ValueError('发布恢复记录格式无效')
+        if record.get('kind') == 'files':
+            _file_targets(library, record)
+            if record['state'] == 'committed':
+                shutil.rmtree(transaction)
+            else:
+                _restore_files(transaction, library, record)
+            continue
+        if record.get('kind') not in (None, 'package') or type(record.get('had_package')) is not bool:
+            raise ValueError('论文包恢复记录格式无效')
         for key in ('paper', 'staging'):
-            if Path(record[key]).name != record[key] or record[key] in {'.', '..'}:
+            value = record.get(key)
+            if not isinstance(value, str) or not value or Path(value).name != value or value in {'.', '..'}:
                 raise ValueError('发布恢复记录包含不安全路径')
         if record['state'] == 'committed':
             shutil.rmtree(transaction)
@@ -111,4 +123,65 @@ def publish(library, paper, staging, catalog_staging, publisher, validate):
         _restore(transaction, library, record)
         raise
     # Cleanup failure does not invalidate a committed publication.
+    shutil.rmtree(transaction, ignore_errors=True)
+
+
+def _file_targets(library, record):
+    from paper_library.catalog.models import PAPER_KEY_PATTERN
+    paper = record.get('paper')
+    names = record.get('files')
+    if (not isinstance(paper, str) or not PAPER_KEY_PATTERN.fullmatch(paper)
+            or not isinstance(names, list) or not names
+            or any(not isinstance(name, str) or name not in {'catalog.tsv', 'metadata.json', 'article.md'} for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('元信息恢复记录包含不安全路径')
+    targets = {name: library / 'catalog.tsv' if name == 'catalog.tsv' else library / 'papers' / paper / name for name in names}
+    if any(path.is_symlink() or path.parent.is_symlink() for path in targets.values()):
+        raise ValueError('元信息发布路径不允许符号链接')
+    return targets
+
+
+def _restore_files(transaction, library, record):
+    for name, target in reversed(list(_file_targets(library, record).items())):
+        saved = transaction / 'old' / name
+        original = saved.read_bytes()
+        if target.is_file() and target.read_bytes() == original:
+            continue
+        restore = transaction / ('restore-' + name)
+        with restore.open('wb') as stream:
+            stream.write(original);stream.flush();os.fsync(stream.fileno())
+        os.replace(restore, target)
+        sync_directory(target.parent)
+    shutil.rmtree(transaction)
+    sync_directory(library / '.transactions')
+
+
+def publish_files(library, paper, replacements, validate):
+    """Commit a bounded set of metadata files with idempotent crash recovery."""
+    record = dict(kind='files', paper=paper, files=list(replacements), state='prepared')
+    targets = _file_targets(library, record)
+    directory = library / '.transactions';directory.mkdir(exist_ok=True)
+    transaction = directory / uuid4().hex;transaction.mkdir()
+    for child in ('old', 'new'):
+        (transaction / child).mkdir()
+    try:
+        for name, target in targets.items():
+            for child, data in [('old', target.read_bytes()), ('new', replacements[name])]:
+                with (transaction / child / name).open('wb') as stream:
+                    stream.write(data);stream.flush();os.fsync(stream.fileno())
+        for child in ('old', 'new'):
+            sync_directory(transaction / child)
+        write_json(transaction / 'journal.json', record)
+        sync_directory(directory)
+        for name, target in targets.items():
+            os.replace(transaction / 'new' / name, target)
+            sync_directory(target.parent)
+        validate()
+        record['state'] = 'committed';write_json(transaction / 'journal.json', record)
+    except BaseException:
+        if (transaction / 'journal.json').exists():
+            _restore_files(transaction, library, record)
+        else:
+            shutil.rmtree(transaction)
+        raise
     shutil.rmtree(transaction, ignore_errors=True)

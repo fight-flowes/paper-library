@@ -8,6 +8,7 @@
   <header class="library-header">
     <h1>{{ library_name }}</h1>
     <p class="library-count">{{ paper_count }} 篇论文</p>
+    <a class="pdf-button header-action" href="{{ url_for('management.import_page', library=g.library_id) }}">导入论文</a>
   </header>
 
   {% if warnings %}
@@ -18,6 +19,16 @@
       </ul>
     </section>
   {% endif %}
+
+  <form class="catalog-filters" method="get" aria-label="筛选论文">
+    <label class="catalog-query">库内搜索<input type="search" name="q" value="{{ filters.q }}" placeholder="搜索标题、简称或期刊" maxlength="200"></label>
+    <label><span id="catalog-subject-label">研究主题</span><select name="subject" aria-labelledby="catalog-subject-label"><option value="">全部主题</option>{% for subject in subjects %}<option{% if filters.subject == subject %} selected{% endif %}>{{ subject }}</option>{% endfor %}</select></label>
+    <label><span id="catalog-year-label">年份</span><select name="year" aria-labelledby="catalog-year-label"><option value="">全部年份</option>{% for year in years %}<option{% if filters.year == year %} selected{% endif %}>{{ year }}</option>{% endfor %}</select></label>
+    <label><span id="catalog-venue-label">期刊 / 会议</span><select name="venue" aria-labelledby="catalog-venue-label"><option value="">全部来源</option>{% for venue in venues %}<option{% if filters.venue == venue %} selected{% endif %}>{{ venue }}</option>{% endfor %}</select></label>
+    <label><span id="catalog-sort-label">主题内排序</span><select name="sort" aria-labelledby="catalog-sort-label">{% for key,label in sorts.items() %}<option value="{{ key }}"{% if sorting == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <button type="submit" class="filter-submit">筛选</button>
+  </form>
+  {% if filtered %}<p class="filter-summary" role="status">找到 {{ filtered_count }} / {{ paper_count }} 篇论文 <a href="{{ url_for('library_index') }}">清除筛选</a></p>{% endif %}
 
   <div class="library-layout">
     <nav class="subject-nav" aria-label="研究主题">
@@ -56,8 +67,8 @@
         </section>
       {% else %}
         <section class="empty-state">
-          <h2>暂无可阅读论文</h2>
-          <p>导入 PDF 并完成解析后，论文会显示在这里。</p>
+          {% if filtered %}<h2>没有匹配的论文</h2><p>试试其他关键词，或<a href="{{ url_for('library_index') }}">清除筛选</a>。</p>
+          {% else %}<h2>暂无可阅读论文</h2><p>导入 PDF 并完成解析后，论文会显示在这里。</p><a class="pdf-button" href="{{ url_for('management.import_page', library=g.library_id) }}">导入第一篇论文</a>{% endif %}
         </section>
       {% endfor %}
     </div>

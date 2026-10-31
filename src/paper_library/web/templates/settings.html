@@ -1,0 +1,82 @@
+{% extends 'base.html' %}
+{% block title %}设置 · 论文阅读器{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}">{% endblock %}
+{% block scripts %}<script defer src="{{ url_for('static', filename='settings.js') }}"></script>{% endblock %}
+{% macro field(group, name, label, value='', type='text', help='', required=true, min='', max='', step='') %}
+<div class="setting-field">
+  <label for="setting-{{ group }}-{{ name }}">{{ label }}{% if name in locked[group] %}<small class="setting-source" aria-hidden="true">环境变量固定</small>{% endif %}</label>
+  <input id="setting-{{ group }}-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}"{% if help %} aria-describedby="hint-{{ group }}-{{ name }}"{% endif %}{% if required %} required{% endif %}{% if min != '' %} min="{{ min }}"{% endif %}{% if max != '' %} max="{{ max }}"{% endif %}{% if step %} step="{{ step }}"{% endif %}{% if name in locked[group] %} readonly{% endif %}{% if type == 'password' %} autocomplete="new-password"{% endif %}>
+  {% if help %}<small id="hint-{{ group }}-{{ name }}" data-setting-help>{{ help }}</small>{% endif %}
+</div>
+{% endmacro %}
+{% macro hidden(group) %}
+<input type="hidden" name="management_token" value="{{ management_token }}">
+<input type="hidden" name="revision" value="{{ revision }}">
+<input type="hidden" name="group" value="{{ group }}">
+{% endmacro %}
+{% macro actions(group, test=false) %}
+<div class="setting-actions">
+  <button class="pdf-button" type="submit"{% if not mutations_enabled %} disabled{% endif %}>保存{{ {'model':'模型设置','remote':'解析设置','import':'导入默认值'}[group] }}</button>
+  {% if test %}<button class="setting-test" type="button" data-test-url="{{ url_for('settings.test_connection') }}"{% if not mutations_enabled %} disabled{% endif %}>测试连接</button>{% endif %}
+  <p class="setting-feedback" role="status" aria-live="polite"></p>
+</div>
+{% endmacro %}
+{% block content %}
+<header class="workspace-heading settings-heading"><h1>设置</h1><span class="state-badge" data-settings-state data-state="{{ 'error' if error else 'ok' }}">{{ '需要检查' if error else '当前配置已生效' }}</span></header>
+{% if error %}<p class="notice notice-warning" role="alert">{{ error }}</p>{% endif %}
+{% if request.args.get('saved') %}<p class="notice settings-success" role="status">已保存并生效。运行中的任务继续使用原配置。</p>{% endif %}
+<div class="settings-layout">
+  <nav class="settings-sections" aria-label="设置分类"><a href="#model">模型</a><a href="#remote">远程解析</a><a href="#import">导入默认值</a><a href="{{ url_for('operations.status') }}">查看运行状态 ↗</a></nav>
+  <div class="settings-content">
+    {% if active.active_job %}<p class="notice">当前有任务正在运行{% if active.configuration %}，使用模型 <strong>{{ active.configuration.model }}</strong>{% endif %}。</p>{% endif %}
+    <section class="settings-section" id="model" aria-labelledby="model-heading">
+      <header><h2 id="model-heading">模型</h2><p>用于段落翻译、导读、结构校对和书目信息检索。保存时会验证模型能否实际响应。</p></header>
+      <form action="{{ url_for('settings.save') }}" method="post" class="settings-form" data-settings-form>
+        {{ hidden('model') }}
+        <div class="settings-fields">
+          {{ field('model','model','模型名称',preferences.model.model,help='使用服务端实际提供的模型名称。') }}
+          {{ field('model','concurrency','并发请求数',preferences.model.concurrency,type='number',min=1,max=32,help='同时执行的模型请求数；仍受全局并发上限约束。') }}
+        </div>
+        <details class="setting-advanced"><summary>接口连接</summary><div class="settings-fields">
+          {{ field('model','base_url','接口地址',preferences.model.base_url, type='url',help='填写包含 /v1 的接口基础地址；端口转发场景保留网关要求的主机名。') }}
+          <div class="setting-field"><label for="setting-model-request_style">接口格式{% if 'request_style' in locked.model %}<small class="setting-source" aria-hidden="true">环境变量固定</small>{% endif %}</label><select id="setting-model-request_style" name="request_style" aria-describedby="hint-model-style"{% if 'request_style' in locked.model %} disabled{% endif %}>{% for value,label in [('openai','OpenAI 兼容'),('qwen','Qwen'),('deepseek','DeepSeek')] %}<option value="{{ value }}"{% if preferences.model.request_style == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><small id="hint-model-style">选择服务所要求的请求格式。Qwen 和 DeepSeek 延续当前的非思考模式。</small></div>
+          <div class="setting-secret">
+            {{ field('model','api_key','API 密钥',type='password',required=false,help='已配置，留空保留原密钥。' if preferences.model.api_key_configured else '尚未配置；接口不要求认证时可留空。') }}
+            <label class="setting-check"><input type="checkbox" name="api_key_clear" value="1"{% if 'api_key' in locked.model %} disabled{% endif %}>清除已保存的密钥</label>
+          </div>
+        </div></details>
+        {{ actions('model',true) }}
+      </form>
+    </section>
+    <section class="settings-section" id="remote" aria-labelledby="remote-heading">
+      <header><h2 id="remote-heading">远程解析</h2><p>解析节点：<strong>cicore01</strong>。仅允许远程解析 PDF；连接失败直接报错。</p></header>
+      <form action="{{ url_for('settings.save') }}" method="post" class="settings-form" data-settings-form>
+        {{ hidden('remote') }}
+        <details class="setting-advanced"><summary>SSH 连接信息</summary><div class="settings-fields">
+          {{ field('remote','host','SSH 主机',preferences.remote.host,help='使用现有 SSH 转发时，可填写 127.0.0.1。') }}
+          {{ field('remote','port','SSH 端口',preferences.remote.port,type='number',min=1,max=65535) }}
+          {{ field('remote','user','SSH 用户名',preferences.remote.user) }}
+          <div class="setting-field"><label for="setting-remote-authentication">认证方式</label><select id="setting-remote-authentication" name="authentication" aria-describedby="hint-remote-auth"><option value="password"{% if preferences.remote.authentication == 'password' %} selected{% endif %}>密码</option><option value="key"{% if preferences.remote.authentication == 'key' %} selected{% endif %}>SSH 密钥 / 代理</option></select><small id="hint-remote-auth">使用系统中已经信任的 SSH 主机密钥。</small></div>
+          {{ field('remote','password','SSH 密码',type='password',required=false,help='已配置，留空保留原密码。' if preferences.remote.password_configured else '密码认证时填写；不会回显。') }}
+          {{ field('remote','identity_file','本机 SSH 私钥路径',preferences.remote.identity_file,required=false,help='密钥认证可指定绝对路径，留空使用 SSH 默认密钥或代理。') }}
+        </div></details>
+        <p class="setting-hint">保存时会确认 cicore01 身份、GPU 和 MinerU 环境。测试不解析 PDF。</p>
+        {{ actions('remote',true) }}
+      </form>
+    </section>
+    <section class="settings-section" id="import" aria-labelledby="import-heading">
+      <header><h2 id="import-heading">导入默认值</h2><p>打开导入界面时预先选中；每次导入仍可单独调整。</p></header>
+      <form action="{{ url_for('settings.save') }}" method="post" class="settings-form" data-settings-form>
+        {{ hidden('import') }}
+        <div class="settings-fields">
+          <div class="setting-field"><label for="setting-import-library">默认论文库{% if 'library' in locked['import'] %}<small class="setting-source" aria-hidden="true">环境变量固定</small>{% endif %}</label><select id="setting-import-library" name="library"{% if 'library' in locked['import'] %} disabled{% endif %}><option value="">自动选择</option>{% for id,library in libraries.items() %}<option value="{{ id }}"{% if preferences['import'].library == id %} selected{% endif %}>{{ library.config.name }}</option>{% endfor %}</select></div>
+          <div class="setting-field"><label for="setting-import-language">默认文档语言</label><select id="setting-import-language" name="language"{% if 'language' in locked['import'] %} disabled{% endif %}><option value="en"{% if preferences['import'].language == 'en' %} selected{% endif %}>英文</option><option value="ch"{% if preferences['import'].language == 'ch' %} selected{% endif %}>中文</option></select></div>
+          <div class="setting-field"><label for="setting-import-enrich">书目信息核对</label><select id="setting-import-enrich" name="enrich"{% if 'enrich' in locked['import'] %} disabled{% endif %}><option value="1"{% if preferences['import'].enrich == '1' %} selected{% endif %}>默认开启</option><option value="0"{% if preferences['import'].enrich == '0' %} selected{% endif %}>默认关闭</option></select></div>
+          <div class="setting-field"><label for="setting-import-auto_translate">解析后自动翻译</label><select id="setting-import-auto_translate" name="auto_translate"{% if 'auto_translate' in locked['import'] %} disabled{% endif %}><option value="1"{% if preferences['import'].auto_translate == '1' %} selected{% endif %}>默认开启</option><option value="0"{% if preferences['import'].auto_translate == '0' %} selected{% endif %}>默认关闭</option></select></div>
+        </div>
+        {{ actions('import') }}
+      </form>
+    </section>
+  </div>
+</div>
+{% endblock %}

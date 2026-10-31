@@ -7,9 +7,17 @@ def operations_blueprint(settings,jobs):
     bp=Blueprint('operations',__name__)
     @bp.get('/manage/status')
     def status():
-        report=check(settings)
+        from paper_library.preferences import PreferenceError
+        runtime=current_app.extensions['runtime_preferences']
+        try:report=check(runtime.snapshot())
+        except PreferenceError:
+            report=check(settings)
+            report['checks']['settings']={'status':'error'}
         runner=current_app.extensions.get('job_runner')
         if hasattr(runner,'status'):report['checks']['worker']=runner.status()
+        index=current_app.extensions.get('search_index')
+        if index is not None:
+            report['checks']['search']={'status':'unavailable' if not index.enabled else 'warning' if index.errors else 'ok'}
         try:
             rows=jobs.recent(limit=20);events={row.id:jobs.events(row.id) for row in rows}
         except sqlite3.Error:rows=[];events={}

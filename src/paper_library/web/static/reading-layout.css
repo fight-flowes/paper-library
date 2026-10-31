@@ -1,10 +1,18 @@
 /* Reader annotations belong to the side panel. */
 .notes-panel[hidden] { display:none; }
-.notes-panel textarea { box-sizing:border-box; width:100%; padding:.5rem; resize:vertical; }
-.notes-actions { display:flex; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
-.notes-panel article { border-top:1px solid var(--line,#ddd); padding:.8rem 0; }
-.note-quote { display:block; width:100%; text-align:start; overflow-wrap:anywhere; margin:.4rem 0; }
-#selected-quote { max-height:8rem; overflow:auto; font-size:.9em; }
+.notes-panel textarea { box-sizing:border-box; width:100%; padding:.4rem; resize:vertical; }
+.notes-panel article { padding:.5rem 0; }
+.notes-panel article + article { border-top:1px solid var(--line,#ddd); }
+.notes-panel article > p:not([hidden]) { margin:.25rem 0; line-height:1.45; }
+.note-quote { display:block; width:100%; text-align:start; overflow-wrap:anywhere; margin:0; }
+.note-quote-preview { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; }
+.note-card-actions { display:flex; align-items:flex-start; gap:.3rem; margin-top:.25rem; }
+.note-card-actions details { flex:1; min-width:0; }
+.note-card-actions summary { display:block; list-style:none; padding:.32rem .45rem; font-size:.76rem; border:1px solid var(--line); border-radius:.4rem; cursor:pointer; }
+.note-card-actions summary::-webkit-details-marker { display:none; }
+.note-card-actions summary:hover { background:var(--accent-soft); color:var(--accent-dark); }
+.note-card-actions details[open] textarea { margin-top:.3rem; }
+.note-card-actions > button { flex:0 0 auto; white-space:nowrap; }
 ::highlight(reader-notes) { background:#ffe69b; color:inherit; }
 .paper-actions button { cursor:pointer; }
 /* Reading workspace: navigation stays beside the paper, never over it on desktop. */
@@ -27,16 +35,13 @@
 .sidebar-footer { margin-top:auto; padding:.85rem .5rem .2rem; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:.7rem; }
 .sidebar-footer button { padding:.5rem; }
 .reader-sidebar .notes-panel { position:static; width:auto; min-height:0; max-height:none; overflow:auto; padding:0 .3rem .75rem; border:0; border-radius:0; box-shadow:none; background:transparent; flex:1; }
-.reader-sidebar .notes-panel button { padding:.4rem .55rem; font-size:.76rem; }
+.reader-sidebar .notes-panel button { padding:.32rem .45rem; font-size:.76rem; }
 .reader-sidebar .notes-panel textarea { font:inherit; line-height:1.6; background:var(--paper,#fff); color:var(--ink); border:1px solid var(--line); border-radius:.4rem; }
-.notes-actions { display:flex; flex-wrap:wrap; gap:.4rem; }
-#selected-quote { max-height:8rem; overflow:auto; line-height:1.6; }
-#notes-list article > button { margin:.4rem .35rem 0 0; }
 .reading-more { position:relative; }
 .reading-more summary { list-style:none; width:2.25rem; height:2.25rem; display:grid; place-items:center; font-size:1.2rem; }
 .reading-more summary::-webkit-details-marker { display:none; }
 .reading-more-menu { position:absolute; right:0; top:calc(100% + .6rem); width:10rem; padding:.4rem; display:flex; flex-direction:column; gap:.2rem; background:var(--paper,#fff); border:1px solid var(--line); border-radius:.5rem; box-shadow:0 8px 24px #0002; }
-.reading-more-menu a, .reading-more-menu .translation-refresh { width:100%; height:auto; display:flex; align-items:center; gap:.5rem; padding:.6rem; border:0; text-decoration:none; font-size:.8rem; color:var(--ink); }
+.reading-more-menu a, .reading-more-menu button { width:100%; height:auto; display:flex; align-items:center; justify-content:flex-start; text-align:left; gap:.5rem; padding:.6rem; border:0; text-decoration:none; font-size:.8rem; color:var(--ink); }
 .reading-more-menu .translation-refresh[hidden] { display:none; }
 .reading-more-menu a:hover { background:var(--accent-soft); }
 .reading-more-menu svg { width:16px; height:16px; }
@@ -87,3 +92,16 @@
 .toolbar-left { display:flex; align-items:center; gap:1.25rem; min-width:0; }
 .toolbar-left .toolbar-navigation { flex-shrink:0; }
 @media(max-width:900px) { .toolbar-left { gap:.5rem; } }
+
+/* Selection action shares toolbar icon sizing; status does not shift controls. */
+#add-highlight:disabled { cursor:default; }
+.highlight-status { position:absolute; top:100%; right:0; font-size:.75rem; background:var(--paper, white); max-width:20rem; }
+.highlight-status:empty { display:none; }
+
+.reading-more-menu .citation-copy { width:100%; height:auto; padding:.6rem; border:0; border-radius:.3rem; text-align:left; font-size:.8rem; color:var(--ink); background:transparent; }
+.reading-more-menu .citation-copy:hover { background:var(--accent-soft); }
+#citation-status:not(:empty) { padding:.2rem .6rem; font-size:.75rem; color:var(--ink-soft); }
+#citation-fallback { width:min(36rem,calc(100vw - 3rem)); padding:1rem; border:1px solid var(--line); border-radius:.6rem; background:var(--paper,#fff); color:var(--ink); }
+#citation-fallback::backdrop { background:#0005; }
+#citation-fallback form { display:flex; justify-content:space-between; align-items:center; }
+#citation-fallback textarea { width:100%; box-sizing:border-box; resize:vertical; }

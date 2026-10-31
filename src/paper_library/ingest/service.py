@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import fcntl
 import hashlib
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -18,6 +17,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,12 +53,13 @@ class IngestResult:
 
 
 class MinerURunner:
-    """Run MinerU in an owned process group with cooperative cancellation."""
+    """Supervise the remote transport; never execute a local PDF parser."""
 
     def __init__(self, settings=None) -> None:
         from paper_library.config import default_settings
         self.settings = settings or default_settings()
         self.last_output: tuple[str, ...] = ()
+        self.last_log: Path | None = None
 
     def run(
         self,
@@ -70,16 +71,34 @@ class MinerURunner:
         on_event: Callable[[str], None] = _ignore,
     ) -> None:
         from .runtime import parser_command
-        executable = parser_command(self.settings.values)
-        timeout = float(self.settings.values.get('PAPER_MINERU_TIMEOUT_SECONDS', '3600'))
-        idle_timeout = float(self.settings.values.get('PAPER_MINERU_IDLE_TIMEOUT_SECONDS', '900'))
-        if timeout <= 0 or idle_timeout <= 0:
-            raise ValueError('解析超时必须为正数')
+        parser_command(self.settings.values)
+        timeout = float(self.settings.values.get('PAPER_MINERU_TIMEOUT_SECONDS', '21600'))
+        idle_timeout = float(self.settings.values.get('PAPER_MINERU_IDLE_TIMEOUT_SECONDS', '0'))
+        if timeout <= 0 or idle_timeout < 0:
+            raise ValueError('解析总超时必须为正数，空闲超时不能为负数')
         environment = os.environ.copy()
-        environment['PATH'] = str(Path(executable).parent) + os.pathsep + environment.get('PATH', '')
-        environment.setdefault("MINERU_MODEL_SOURCE", "local")
+        for key, value in self.settings.values.items():
+            if key.startswith('PAPER_MINERU_'):
+                environment[key] = value
+        environment['MINERU_MODEL_SOURCE'] = self.settings.values.get('PAPER_MINERU_MODEL_SOURCE', 'local')
+        environment['MINERU_PROCESSING_WINDOW_SIZE'] = self.settings.values.get(
+            'PAPER_MINERU_PROCESSING_WINDOW_SIZE', '8'
+        )
+        environment['MINERU_HYBRID_BATCH_RATIO'] = self.settings.values.get(
+            'PAPER_MINERU_HYBRID_BATCH_RATIO', '1'
+        )
+        log_directory = self.settings.paths.state / 'logs' / 'mineru'
+        log_handle = None
+        try:
+            log_directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            self.last_log = log_directory / f'{stamp}-{uuid4().hex[:8]}.log'
+            log_handle = self.last_log.open('w', encoding='utf-8')
+        except OSError:
+            self.last_log = None
         process = subprocess.Popen(
-            [executable, "-p", str(source), "-o", str(output), "-l", language],
+            [sys.executable, '-m', 'paper_library.ingest.remote',
+             '-p', str(source), '-o', str(output), '-l', language],
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -107,8 +126,10 @@ class MinerURunner:
         try:
             while not ended or process.poll() is None:
                 now = time.monotonic()
-                if now - started > timeout or now - last_output_at > idle_timeout:
-                    raise ValueError('MinerU 解析超时，可检查资源后重试')
+                if now - started > timeout:
+                    raise ValueError(f'MinerU 解析总超时（{timeout:g} 秒），可调整 PAPER_MINERU_TIMEOUT_SECONDS 后重试')
+                if idle_timeout and now - last_output_at > idle_timeout:
+                    raise ValueError(f'MinerU 连续 {idle_timeout:g} 秒没有输出，可调整或禁用空闲超时后重试')
                 if cancelled():
                     self._terminate(process)
                     raise ValueError("MinerU 解析已取消")
@@ -124,18 +145,33 @@ class MinerURunner:
                 if not sanitized:
                     continue
                 captured.append(sanitized)
+                if log_handle is not None:
+                    log_handle.write(sanitized + '\n')
+                    log_handle.flush()
                 now = time.monotonic()
                 if now - last_event >= 0.25:
                     on_event(sanitized)
                     last_event = now
             return_code = process.wait()
             if return_code:
-                raise ValueError(f"MinerU 执行失败，退出码 {return_code}")
+                raise ValueError(f"cicore01 远程解析失败，退出码 {return_code}；禁止回退本机解析")
         finally:
             self.last_output = tuple(captured)
             if process.poll() is None:
                 self._terminate(process)
             reader.join(timeout=1)
+            if log_handle is not None:
+                log_handle.close()
+            self._rotate_logs(log_directory)
+
+    def _rotate_logs(self, directory: Path) -> None:
+        keep = int(self.settings.values.get('PAPER_MINERU_LOG_KEEP', '10'))
+        try:
+            logs = sorted(directory.glob('*.log'), key=lambda path: path.stat().st_mtime, reverse=True)
+            for path in logs[keep:]:
+                path.unlink(missing_ok=True)
+        except OSError:
+            return
 
     @staticmethod
     def _terminate(process: subprocess.Popen[str]) -> None:
@@ -190,7 +226,11 @@ def _lock(library_root: Path):
 def _next_id(snapshot) -> str:
     prefix = snapshot.descriptor.config.paper_id_prefix
     pattern = re.compile(rf"^{re.escape(prefix)}-p(\d+)$")
-    highest = max((int(match.group(1)) for paper in snapshot.papers if (match := pattern.fullmatch(paper.id))), default=0)
+    reserved = {key.casefold() for paper in snapshot.papers for key in (paper.id, *paper.aliases)}
+    directory = snapshot.descriptor.root / 'papers'
+    if directory.is_dir():
+        reserved.update(path.name.casefold() for path in directory.iterdir())
+    highest = max((int(match.group(1)) for key in reserved if (match := pattern.fullmatch(key))), default=0)
     return f"{prefix}-p{highest + 1:04d}"
 
 
@@ -199,6 +239,7 @@ def _sanitize_markdown(value: str) -> str:
 
 
 def _catalog_rows(snapshot, added: dict[str, str] | None = None) -> list[dict[str, str]]:
+    _require_clean_catalog(snapshot)
     rows = [
         {
             "id": paper.id, "year": paper.year, "venue": paper.venue,
@@ -212,6 +253,11 @@ def _catalog_rows(snapshot, added: dict[str, str] | None = None) -> list[dict[st
     if added:
         rows.append(added)
     return sorted(rows, key=lambda row: (row["subject"].casefold(), row["year"], row["id"]))
+
+
+def _require_clean_catalog(snapshot):
+    if snapshot.warnings:
+        raise ValueError('论文目录存在无效记录，已停止写入以保护现有论文：' + '；'.join(snapshot.warnings))
 
 
 def _write_catalog(path: Path, rows: list[dict[str, str]]) -> None:
@@ -266,9 +312,14 @@ def ingest_pdf(
     runner = mineru_runner or MinerURunner(repair_settings)
     with _lock(root):
         snapshot = repository.load(library_id)
+        _require_clean_catalog(snapshot)
         duplicate = next((paper for paper in snapshot.papers if paper.sha256 == digest), None)
         paper_id = duplicate.id if duplicate else _next_id(snapshot)
         paths = PaperPaths.for_id(root, paper_id)
+        if paths.root.is_symlink() or (not duplicate and paths.root.exists()):
+            raise ValueError('新论文编号与现有论文包冲突，已停止导入')
+        if duplicate and force and paths.pdf.is_file() and _digest(paths.pdf) != digest:
+            raise ValueError('现有 PDF 与目录指纹不一致，已停止覆盖，请先核对论文包')
         if duplicate and not force:
             return IngestResult(library_id, paper_id, IngestOutcome.UNCHANGED, paths)
         outcome = IngestOutcome.UPDATED if duplicate else IngestOutcome.CREATED
@@ -288,8 +339,8 @@ def ingest_pdf(
                     shutil.copytree(destination / '.history', staging / '.history', dirs_exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="paper-mineru-") as temporary:
                 output = Path(temporary) / "output"
-                on_progress("parsing", {"message": "正在解析 PDF"})
-                on_event("正在解析 PDF")
+                on_progress("parsing", {"message": "正在由 cicore01 远程解析 PDF"})
+                on_event("正在由 cicore01 远程解析 PDF")
                 runner.run(
                     source,
                     output,
@@ -307,6 +358,9 @@ def ingest_pdf(
                     raise ValueError("MinerU 生成的 Markdown 为空")
                 shutil.copy2(source, staging / "source.pdf")
                 (staging / "article.md").write_text(markdown, encoding="utf-8")
+                for name in ('pdf-frontmatter.json', 'parser-provenance.json'):
+                    if (output / name).is_file():
+                        shutil.copy2(output / name, staging / name)
                 from paper_library.storage.history import checkpoint
                 checkpoint(staging, "MinerU original")
                 from paper_library.ingest.paragraphs import repair_file
@@ -322,23 +376,29 @@ def ingest_pdf(
                 else:
                     images.mkdir()
             try:
-                mineru_version = importlib.metadata.version("mineru")
-            except importlib.metadata.PackageNotFoundError:
+                parser_provenance = json.loads((staging / 'parser-provenance.json').read_text())
+                mineru_version = parser_provenance['mineru_version']
+            except (OSError, ValueError, KeyError):
+                parser_provenance = {}
                 mineru_version = "unknown"
             parsed_at = datetime.now(timezone.utc).isoformat()
-            from paper_library.metadata.repair import verify_bibliography, repaired_short_name
+            from paper_library.metadata.repair import verify_bibliography, repaired_short_name, parsed_display_title
+            from paper_library.metadata.identifiers import ACLClient, CrossrefClient
             if enrich:
                 on_progress("enriching", {"message": "正在检索并核对论文信息"})
                 result = verify_bibliography(
                     title, year, venue, original_filename or source.name,
                     (staging / 'article.md').read_text(encoding='utf-8'),
-                    gateway or GatewayClient(), pdf=source,
+                    gateway or GatewayClient(), pdf=staging / 'source.pdf', settings=repair_settings,
+                    official_lookup=CrossrefClient() if gateway is None else None, cancelled=cancelled,
+                    acl_lookup=ACLClient() if gateway is None else None,
                 )
                 enrichment = {'status': result.status, 'confidence': result.confidence,
                               'bibliography': result.bibliography, **result.enrichment}
             else:
                 enrichment = _enrichment(title, year, venue, False, gateway)
             bibliography = enrichment.pop("bibliography", {})
+            title = parsed_display_title(title, (staging / 'article.md').read_text(encoding='utf-8'))
             if enrichment.get("status") == "verified" and isinstance(bibliography, dict):
                 title = str(bibliography.get("canonical_title") or title)
                 short_name = repaired_short_name(short_name, title)
@@ -354,6 +414,7 @@ def ingest_pdf(
                 "subject": subject, "original_filename": original_filename or source.name,
                 "source_sha256": digest, "source_size": source.stat().st_size,
                 "language": language, "mineru_version": mineru_version,
+                "parser": parser_provenance,
                 "parsed_at": parsed_at, "bibliography": bibliography,
                 "enrichment": enrichment,
             }
@@ -382,9 +443,24 @@ def ingest_pdf(
                 catalog_staging.unlink(missing_ok=True)
 
 
-def refresh_metadata(repository: LibraryRepository, library_id: str, paper_id: str, *, gateway=None) -> str:
-    from paper_library.metadata.repair import verify_bibliography, repaired_short_name
+def _merge_bibliography(existing: dict, verified: dict) -> dict:
+    merged = {**existing, **verified}
+    # A preprint DOI identifies a different version; do not cite it as the
+    # conference or journal article when the official page has no DOI.
+    if (verified.get('venue_type') in {'conference', 'journal'}
+            and not verified.get('doi')
+            and re.fullmatch(r'10\.48550/arXiv\.\d{4}\.\d{4,5}',
+                             str(existing.get('doi', '')), re.I)):
+        merged.pop('doi', None)
+    return merged
+
+
+def refresh_metadata(repository: LibraryRepository, library_id: str, paper_id: str, *, gateway=None,
+                     settings=None, cancelled=lambda: False) -> str:
+    from paper_library.metadata.repair import verify_bibliography, repaired_short_name, leading_split_title
+    from paper_library.metadata.identifiers import ACLClient, CrossrefClient
     from paper_library.metadata.service import _normalize
+    from paper_library.structure.frontmatter import source_headings
 
     snapshot = repository.load(library_id)
     paper = snapshot.find(paper_id)
@@ -393,12 +469,16 @@ def refresh_metadata(repository: LibraryRepository, library_id: str, paper_id: s
     paths = PaperPaths.for_id(snapshot.descriptor.root, paper.id)
     with _lock(snapshot.descriptor.root):
         snapshot = repository.load(library_id)
+        _require_clean_catalog(snapshot)
         paper = snapshot.find(paper.id)
         metadata = json.loads(paths.metadata.read_text(encoding="utf-8"))
         markdown = paths.markdown.read_text(encoding='utf-8')
         result = verify_bibliography(
             paper.title, paper.year, paper.venue, metadata.get('original_filename', ''),
             markdown, gateway or GatewayClient(), pdf=paths.pdf, known=metadata.get('bibliography'),
+            settings=settings, official_lookup=CrossrefClient() if gateway is None else None,
+            acl_lookup=ACLClient() if gateway is None else None,
+            cancelled=cancelled,
         )
         audit = paths.root / 'metadata-repairs' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '-' + uuid4().hex[:8])
         audit.mkdir(parents=True)
@@ -421,35 +501,30 @@ def refresh_metadata(repository: LibraryRepository, library_id: str, paper_id: s
         fields = {'title': canonical, 'short_name': repaired_short_name(paper.short_name, canonical),
                   'venue': venue, 'publication_date': date, 'year': date[:4] if date else paper.year}
         metadata.update(fields)
-        metadata['bibliography'] = {**metadata.get('bibliography', {}), **bibliography}
+        metadata['bibliography'] = _merge_bibliography(metadata.get('bibliography', {}), bibliography)
         metadata['enrichment'] = {'status': result.status, 'confidence': result.confidence, **result.enrichment}
-        heading = re.search(r'(?m)^#\s+(.+?)\s*$', markdown[:12000])
-        if heading and _normalize(heading.group(1)) != _normalize(canonical):
+        visible = source_headings(markdown)
+        offset = sum(map(len, markdown.splitlines(keepends=True)[:visible[0].start_line - 1])) if visible else 0
+        heading = re.match(r'^#{1,6}[ \t]+(.+?)[ \t]*(?:\n|$)', markdown[offset:]) if visible else None
+        if (heading and _normalize(heading.group(1)) != _normalize(canonical)
+                and _normalize(leading_split_title(markdown)) != _normalize(canonical)):
             old = _normalize(heading.group(1))
             if len(old.split()) >= 4 and (old in _normalize(canonical) or old == _normalize(paper.title)):
-                markdown = markdown[:heading.start(1)] + canonical + markdown[heading.end(1):]
+                markdown = markdown[:offset + heading.start(1)] + canonical + markdown[offset + heading.end(1):]
         rows = _catalog_rows(snapshot)
         for row in rows:
             if row['id'] == paper.id:
                 row.update(fields)
-        # Prepare every replacement before changing the live files; retain the
-        # durable backups if publication or rollback itself fails.
-        with tempfile.TemporaryDirectory(prefix='.metadata-staging-', dir=paths.root) as temp:
-            temp = Path(temp)
-            (temp / 'metadata.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-            (temp / 'article.md').write_text(markdown, encoding='utf-8')
-            _write_catalog(temp / 'catalog.tsv', rows)
-            published = []
-            try:
-                for target in originals:
-                    os.replace(temp / target.name, target)
-                    published.append(target)
-                if repository.load(library_id).find(paper.id).title != canonical:
+        from paper_library.storage.publication import publish_files
+        with tempfile.TemporaryDirectory(prefix='.metadata-staging-', dir=snapshot.descriptor.root) as temporary:
+            catalog = Path(temporary) / 'catalog.tsv'
+            _write_catalog(catalog, rows)
+            replacements = {'metadata.json': (json.dumps(metadata, ensure_ascii=False, indent=2) + '\n').encode(),
+                            'article.md': markdown.encode(), 'catalog.tsv': catalog.read_bytes()}
+            def validate():
+                refreshed = repository.load(library_id)
+                _require_clean_catalog(refreshed)
+                if refreshed.find(paper.id).title != canonical:
                     raise ValueError('目录更新校验失败')
-            except BaseException:
-                for target in reversed(published):
-                    restore = temp / ('restore-' + target.name)
-                    restore.write_bytes(originals[target])
-                    os.replace(restore, target)
-                raise
+            publish_files(snapshot.descriptor.root, paper.id, replacements, validate)
     return f"已核验并同步：{library_id}/{paper.id} — {canonical}"

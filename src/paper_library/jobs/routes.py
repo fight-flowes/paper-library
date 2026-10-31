@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, url_for
 
 from paper_library.catalog import LibraryError, LibraryRepository
 from paper_library.catalog.subjects import add_subject, list_subjects
+from paper_library.catalog.creation import create_library
 
-from .models import InvalidTransition, JobRecord, JobState, NewJob
+from .models import InvalidTransition, JobRecord, JobState, NewJob, QueueFull
 from .repository import JobRepository
 from .runner import JobRunner
 from .security import ManagementGuard
@@ -34,6 +35,10 @@ def create_management_blueprint(dependencies: JobDependencies) -> Blueprint:
     def no_store(response):
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @blueprint.errorhandler(QueueFull)
+    def queue_full(error):
+        return render_template('error.html', title='任务队列已满', message=str(error)), 429, {'Retry-After': '60'}
 
     @blueprint.get("/manage/import")
     def import_page():
@@ -73,6 +78,15 @@ def create_management_blueprint(dependencies: JobDependencies) -> Blueprint:
         dependencies.runner.wake()
         return redirect(url_for("management.job_detail", job_id=job.id), code=303)
 
+    @blueprint.post('/manage/libraries')
+    def create_library_route():
+        _authorize(dependencies)
+        try:
+            library = create_library(dependencies.libraries, request.form.get('name', ''))
+        except (LibraryError, ValueError, OSError) as error:
+            return jsonify(error=str(error)), 400
+        return jsonify(library=library), 201
+
     @blueprint.post('/manage/subjects')
     def create_subject():
         _authorize(dependencies)
@@ -91,6 +105,7 @@ def create_management_blueprint(dependencies: JobDependencies) -> Blueprint:
         return render_template(
             "job.html",
             job=job,
+            **_job_labels(job, dependencies),
             management_token=dependencies.guard.token,
             paper_url=_paper_url(job),
             mutations_enabled=dependencies.guard.mutations_enabled,
@@ -101,7 +116,7 @@ def create_management_blueprint(dependencies: JobDependencies) -> Blueprint:
         job = dependencies.jobs.get(job_id)
         if job is None:
             abort(404)
-        return jsonify(_serialize(job))
+        return jsonify({**_serialize(job), **_job_labels(job, dependencies)})
 
     @blueprint.get("/api/jobs")
     def recent_jobs():
@@ -115,7 +130,10 @@ def create_management_blueprint(dependencies: JobDependencies) -> Blueprint:
             abort(404)
         if job.state not in {JobState.FAILED, JobState.COMPLETED_WITH_WARNINGS}:
             abort(409)
-        dependencies.jobs.retry(job_id)
+        try:
+            dependencies.jobs.retry(job_id)
+        except InvalidTransition:
+            abort(409)
         dependencies.runner.wake()
         return redirect(url_for("management.job_detail", job_id=job_id), code=303)
 
@@ -159,12 +177,28 @@ def _render_import(
     error: str | None = None,
     status: int = 200,
 ):
+    from paper_library.preferences import PreferenceError, public_settings
+    runtime = current_app.extensions['runtime_preferences']
+    try: defaults = public_settings(runtime.snapshot())['import']
+    except PreferenceError:
+        defaults = public_settings(runtime.initial)['import']
+        error = error or '设置文件暂不可用，请在设置页检查'
+    if request.method == 'POST':
+        defaults.update(language=request.form.get('language', defaults['language']),
+                        enrich=request.form.get('enrich', '0'), auto_translate=request.form.get('auto_translate', '0'))
     try:
-        libraries = dependencies.libraries.discover()
-        subjects_by_library = {
-            library_id: list_subjects(dependencies.libraries, library_id)
-            for library_id in libraries
-        }
+        libraries, issues = dependencies.libraries.scan()
+        subjects_by_library = {}
+        usable = {}
+        for library_id, descriptor in libraries.items():
+            try:
+                subjects_by_library[library_id] = list_subjects(dependencies.libraries, library_id)
+                usable[library_id] = descriptor
+            except (LibraryError, ValueError, OSError):
+                issues[library_id] = '主题或目录暂不可用'
+        libraries = usable
+        if issues:
+            error = error or '部分论文库暂不可用：' + '、'.join(issues)
         subjects = sorted(
             {subject for values in subjects_by_library.values() for subject in values},
             key=str.casefold,
@@ -181,6 +215,8 @@ def _render_import(
             libraries=libraries,
             subjects=subjects,
             subjects_by_library=subjects_by_library,
+            selected_library=request.form.get('library_id', request.args.get('library', defaults['library'])),
+            import_defaults=defaults,
             jobs=dependencies.jobs.recent(limit=20),
             management_token=dependencies.guard.token,
             mutations_enabled=dependencies.guard.mutations_enabled,
@@ -195,6 +231,19 @@ def _paper_url(job: JobRecord) -> str | None:
     if not job.paper_id:
         return None
     return url_for("paper_detail", library_id=job.library_id, paper_id=job.paper_id)
+
+
+def _job_labels(job: JobRecord, dependencies: JobDependencies) -> dict[str, str]:
+    title, library_name = job.original_filename, job.library_id
+    try:
+        snapshot = dependencies.libraries.load(job.library_id)
+        library_name = snapshot.descriptor.config.name
+        paper = snapshot.find(job.paper_id) if job.paper_id else None
+        if paper:
+            title = paper.display_title
+    except LibraryError:
+        pass
+    return dict(title=title, library_name=library_name)
 
 
 def _serialize(job: JobRecord) -> dict[str, Any]:
